@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is a Telegram bot that automatically scrapes Idealista for new apartment listings in Barcelona. It filters listings based on predefined criteria and sends real-time notifications via Telegram, including:
+This project is a Telegram bot that automatically scrapes Idealista for new apartment listings in Lisboa. It is a modified version of [Idealista notifier](https://github.com/martin0995). It filters listings based on predefined criteria and sends real-time notifications via Telegram, including:
 
 - 📍 Location
 - 💰 Price
@@ -28,18 +28,17 @@ idealista-notifier/
 ## How It Works
 
 1. The script scrapes Idealista every 2 minutes
-2. It filters out unwanted areas (e.g., Raval, Gòtic)
-3. If a new listing appears, it extracts:
+2. If a new listing appears, it extracts:
     - Location, price, size, rooms, floor, and description
-4. It sends a formatted message to your Telegram bot
+3. It sends a formatted message to your Telegram bot
 
 ## Setup & Installation
 
 1. Clone the Repository
 
 ```bash
-git clone https://github.com/martin0995/idealista-notifier.git
-cd idealista-notifier
+git clone https://github.com/iftwigs/idealista-portugal.git
+cd idealista-portugal
 ```
 
 2. Install Dependencies
@@ -114,10 +113,6 @@ railway status
 ```
 
 The bot will now run 24/7, even if you turn off your computer.
-
-## Telegram Bot Link
-
-Try it out: https://t.me/Idealista_Notifier_Bot
 
 ## Contributing
 
