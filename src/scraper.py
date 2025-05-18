@@ -21,22 +21,22 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 MAX_PRICE = 1400
 
 # Define the search URL with filters (modify as needed)
-IDEALISTA_URL = f"https://www.idealista.com/alquiler-viviendas/barcelona-barcelona/con-precio-hasta_{MAX_PRICE},metros-cuadrados-mas-de_40,publicado_ultimas-24-horas,alquiler-de-larga-temporada/?ordenado-por=fecha-publicacion-desc"
+IDEALISTA_URL = f"https://www.idealista.pt/arrendar-casas/lisboa/com-preco-max_1100,tamanho-min_60,t1,t2,t3,t4-t5,equipamento_mobilado,novo,bom-estado/?ordem=atualizado-desc"
 
 # Neighborhoods to exclude
 EXCLUDED_AREAS = ["Raval", "Gòtic", "Gotico", "Gótico", "Gotic", "Barceloneta"]
 
 # Keywords to filter out
-EXCLUDED_TERMS = ["Alquiler de temporada", "alquiler temporal", "estancia corta"]
+EXCLUDED_TERMS = ["curto prazo", "alquiler temporal", "estancia corta", "short term"]
 
 # Exclude unwanted floors
 EXCLUDED_FLOORS = ["Entreplanta", "Planta 1ᵃ", "Bajo"]
 
 # Track seen listings to avoid duplicates
-SEEN_LISTINGS_FILE = "/app/data/seen_listings.json"
+SEEN_LISTINGS_FILE = "seen_listings.json"
 
 # Track if an error has already been notified
-ERROR_LOG_FILE = "/app/data/error_log.json"
+ERROR_LOG_FILE = "error_log.json"
 
 def load_seen_listings():
     try:
@@ -50,11 +50,31 @@ def save_seen_listings(seen_listings):
         json.dump(list(seen_listings), f)
 
 async def send_telegram_message(message):
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
+        logging.debug("Successfully sent Telegram message")
+    except Exception as e:
+        logging.error(f"Failed to send Telegram message: {e}")
+        print(f"Failed to send Telegram message: {e}")
 
-def send_message_sync(message):
-    asyncio.run(send_telegram_message(message))
+def send_telegram_message_direct(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            logging.debug("Successfully sent Telegram message via direct API")
+        else:
+            logging.error(f"Failed to send Telegram message: {response.text}")
+            print(f"Failed to send Telegram message: {response.text}")
+    except Exception as e:
+        logging.error(f"Failed to send Telegram message: {e}")
+        print(f"Failed to send Telegram message: {e}")
 
 # Error Handling:
 def load_error_status():
@@ -75,14 +95,25 @@ def scrape_idealista():
     logging.debug(f"Scraping Idealista...")
     print("Scraping Idealista...")
 
+    # headers = {
+    #     "User-Agent": UserAgent().random,
+    #     "Accept-Language": "es-ES,es;q=0.9",
+    #     "Referer": "https://www.google.com/",
+    #     "DNT": "1",
+    #     "Connection": "keep-alive",
+    #     "Upgrade-Insecure-Requests": "1",
+    # }
+
     headers = {
-        "User-Agent": UserAgent().random,
-        "Accept-Language": "es-ES,es;q=0.9",
-        "Referer": "https://www.google.com/",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
+    'Referer': 'https://www.idealista.pt/'
+}
 
     session = requests.Session()
     session.headers.update(headers)
@@ -121,7 +152,7 @@ def scrape_idealista():
         try:
             # Title
             title = listing.find("a", class_="item-link").get_text(strip=True)
-            link = "https://www.idealista.com" + listing.find("a", class_="item-link")["href"]
+            link = "https://www.idealista.pt" + listing.find("a", class_="item-link")["href"]
 
             # Description
             description = listing.find("div", class_="description").get_text(strip=True) if listing.find("div", class_="description") else "No description"
@@ -175,7 +206,7 @@ def scrape_idealista():
 📐 {size}
 🏢 {floor}\n
 🔗 [Click here to view]({link})"""
-                send_message_sync(message)
+                send_telegram_message_direct(message)
 
         except Exception as e:
             logging.debug(f"Error parsing listing: {e}")
