@@ -1,11 +1,13 @@
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
-from models import SearchConfig, PropertyState
+from models import SearchConfig, PropertyState, FurnitureType
 import json
 import os
 from typing import Dict
 import logging
+import asyncio
 from dotenv import load_dotenv
-from filters import MAIN_MENU_KEYBOARD, set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency
+from filters import set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency, set_polygon
+from scraper import IdealistaScraper
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
@@ -20,10 +22,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE = range(10)
+CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(11)
 
-# Store user configurations
+# Store user configurations and monitoring tasks
 user_configs: Dict[int, SearchConfig] = {}
+monitoring_tasks: Dict[int, asyncio.Task] = {}  # user_id -> monitoring task
+
+def get_main_menu_keyboard(user_id: int) -> list:
+    """Get the main menu keyboard with dynamic monitoring button"""
+    base_keyboard = [
+        [InlineKeyboardButton("Set number of rooms", callback_data='rooms')],
+        [InlineKeyboardButton("Set size in square meters", callback_data='size')],
+        [InlineKeyboardButton("Set maximum price", callback_data='price')],
+        [InlineKeyboardButton("Set furniture preference", callback_data='furniture')],
+        [InlineKeyboardButton("Set state of the property", callback_data='state')],
+        [InlineKeyboardButton("Set city", callback_data='city')],
+        [InlineKeyboardButton("Set a custom area (polygon)", callback_data='polygon')],
+        [InlineKeyboardButton("Set update frequency", callback_data='frequency')],
+        [InlineKeyboardButton("Show current settings", callback_data='show')]
+    ]
+    
+    # Add monitoring button based on current status
+    is_monitoring = user_id in monitoring_tasks and not monitoring_tasks[user_id].done()
+    if is_monitoring:
+        base_keyboard.append([InlineKeyboardButton("🛑 Stop monitoring", callback_data='stop_monitoring')])
+    else:
+        base_keyboard.append([InlineKeyboardButton("🚀 Start searching", callback_data='start_monitoring')])
+    
+    return base_keyboard
 
 def load_configs():
     """Load saved configurations from file"""
@@ -31,9 +57,20 @@ def load_configs():
         with open('user_configs.json', 'r') as f:
             configs = json.load(f)
             for user_id, config in configs.items():
-                # Convert string value back to PropertyState enum
-                if 'property_state' in config:
-                    config['property_state'] = PropertyState(config['property_state'])
+                # Handle backwards compatibility for property_state -> property_states
+                if 'property_state' in config and 'property_states' not in config:
+                    config['property_states'] = [PropertyState(config['property_state'])]
+                    config.pop('property_state', None)  # Remove old field
+                elif 'property_states' in config:
+                    config['property_states'] = [PropertyState(state) for state in config['property_states']]
+                
+                # Handle backwards compatibility for furniture setting
+                if 'has_furniture' in config and 'furniture_type' not in config:
+                    config['furniture_type'] = FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.UNFURNISHED
+                    config.pop('has_furniture', None)  # Remove old field
+                elif 'furniture_type' in config:
+                    config['furniture_type'] = FurnitureType(config['furniture_type'])
+                
                 user_configs[int(user_id)] = SearchConfig(**config)
     except FileNotFoundError:
         # Create empty config file if it doesn't exist
@@ -48,8 +85,10 @@ def save_configs():
         configs = {}
         for user_id, config in user_configs.items():
             config_dict = config.__dict__.copy()
-            # Convert PropertyState enum to string value
-            config_dict['property_state'] = config_dict['property_state'].value
+            # Convert PropertyState list to string values
+            config_dict['property_states'] = [state.value for state in config_dict['property_states']]
+            # Convert FurnitureType enum to string value
+            config_dict['furniture_type'] = config_dict['furniture_type'].value
             configs[str(user_id)] = config_dict
         
         with open('user_configs.json', 'w') as f:
@@ -74,7 +113,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_configs[user_id] = SearchConfig()
         logger.info(f"Created new config for user {user_id}")
     
-    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+    reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
     
     await update.message.reply_text(
         "Welcome to Idealista Monitor Bot! Please choose an option:",
@@ -94,15 +133,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"BUTTON: User {update.effective_user.id}")
     
     if query.data == 'show':
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         await query.message.reply_text(
             f"Current settings:\n"
             f"Minimum rooms: {config.min_rooms}+\n"
             f"Size: {config.min_size}-{config.max_size}m²\n"
             f"Max Price: {config.max_price}€\n"
-            f"Furniture: {'Yes' if config.has_furniture else 'No'}\n"
-            f"State: {config.property_state.name}\n"
-            f"City: {config.city}\n"
+            f"Furniture: {config.furniture_type.name.replace('_', ' ').title()}\n"
+            f"State: {', '.join([state.name.replace('_', ' ').title() for state in config.property_states])}\n"
+            f"{'Custom Area: Set' if config.custom_polygon else f'City: {config.city}'}\n"
             f"Update Frequency: {config.update_frequency} minutes"
         )
         return CHOOSING
@@ -112,7 +154,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info("Back button pressed, returning to main menu")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         
         await query.edit_message_text(
             "Please choose an option:",
@@ -137,18 +179,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await set_city(update, context)
     elif query.data == 'frequency':
         return await set_frequency(update, context)
+    elif query.data == 'polygon':
+        return await set_polygon(update, context)
+    elif query.data == 'start_monitoring':
+        return await start_monitoring(update, context)
+    elif query.data == 'stop_monitoring':
+        return await stop_monitoring(update, context)
     
     # Handle setting values
     if query.data.startswith('rooms_'):
         _, min_rooms = query.data.split('_')
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.min_rooms = int(min_rooms)
         config.max_rooms = 10  # Set a high maximum to include all rooms above minimum
         save_configs()
         await query.message.edit_text(f"Minimum rooms set to {min_rooms}+!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -157,14 +208,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     elif query.data.startswith('size_'):
         _, min_size = query.data.split('_')
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.min_size = int(min_size)
         config.max_size = 200  # Set a high maximum to include all sizes above minimum
         save_configs()
         await query.message.edit_text(f"Minimum size set to {min_size}m²+!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -173,13 +227,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     elif query.data.startswith('price_'):
         _, max_price = query.data.split('_')
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.max_price = int(max_price)
         save_configs()
         await query.message.edit_text("Maximum price updated!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -187,49 +244,98 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return CHOOSING
     
     elif query.data.startswith('furniture_'):
-        _, has_furniture = query.data.split('_')
-        config = user_configs[update.effective_user.id]
-        config.has_furniture = has_furniture == 'true'
+        _, furniture_type = query.data.split('_')
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
+        if furniture_type == 'furnished':
+            config.furniture_type = FurnitureType.FURNISHED
+        elif furniture_type == 'kitchen':
+            config.furniture_type = FurnitureType.KITCHEN_FURNITURE
+        elif furniture_type == 'unfurnished':
+            config.furniture_type = FurnitureType.UNFURNISHED
         save_configs()
         await query.message.edit_text("Furniture preference updated!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
         )
         return CHOOSING
     
-    elif query.data.startswith('state_'):
-        _, state = query.data.split('_')
-        config = user_configs[update.effective_user.id]
-        if state == 'good':
-            config.property_state = PropertyState.GOOD
-        elif state == 'remodel':
-            config.property_state = PropertyState.NEEDS_REMODELING
-        elif state == 'new':
-            config.property_state = PropertyState.NEW
-        save_configs()
-        await query.message.edit_text("Property state updated!")
+    elif query.data.startswith('state_toggle_'):
+        _, _, state = query.data.split('_')
+        user_id = update.effective_user.id
         
-        # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
-        await query.message.edit_text(
-            "Welcome to Idealista Monitor Bot! Please choose an option:",
+        # Ensure user config exists
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        
+        config = user_configs[user_id]
+        
+        # Toggle the state in the list
+        if state == 'good':
+            target_state = PropertyState.GOOD
+        elif state == 'remodel':
+            target_state = PropertyState.NEEDS_REMODELING
+        elif state == 'new':
+            target_state = PropertyState.NEW
+        else:
+            return SETTING_STATE
+            
+        if target_state in config.property_states:
+            # Remove if already selected (but keep at least one)
+            if len(config.property_states) > 1:
+                config.property_states.remove(target_state)
+        else:
+            # Add if not selected
+            config.property_states.append(target_state)
+            
+        save_configs()
+        
+        # Manually refresh the keyboard without calling set_state to avoid recursion
+        keyboard = []
+        
+        # Good Condition
+        is_good_selected = PropertyState.GOOD in config.property_states
+        good_text = "✅ Good Condition" if is_good_selected else "☐ Good Condition"
+        keyboard.append([InlineKeyboardButton(good_text, callback_data='state_toggle_good')])
+        
+        # Needs Remodeling
+        is_remodel_selected = PropertyState.NEEDS_REMODELING in config.property_states
+        remodel_text = "✅ Needs Remodeling" if is_remodel_selected else "☐ Needs Remodeling"
+        keyboard.append([InlineKeyboardButton(remodel_text, callback_data='state_toggle_remodel')])
+        
+        # New
+        is_new_selected = PropertyState.NEW in config.property_states
+        new_text = "✅ New" if is_new_selected else "☐ New"
+        keyboard.append([InlineKeyboardButton(new_text, callback_data='state_toggle_new')])
+        
+        keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "Select property states (you can select multiple):",
             reply_markup=reply_markup
         )
-        return CHOOSING
+        return SETTING_STATE
     
     elif query.data.startswith('city_'):
         _, city = query.data.split('_')
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.city = city
         save_configs()
         await query.message.edit_text("City updated!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -238,13 +344,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     elif query.data.startswith('freq_'):
         _, minutes = query.data.split('_')
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.update_frequency = int(minutes)
         save_configs()
         await query.message.edit_text("Update frequency updated!")
         
         # Show main menu
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+        await query.message.edit_text(
+            "Welcome to Idealista Monitor Bot! Please choose an option:",
+            reply_markup=reply_markup
+        )
+        return CHOOSING
+    
+    elif query.data == 'polygon_clear':
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
+        config.custom_polygon = None
+        save_configs()
+        await query.message.edit_text("Custom area cleared!")
+        
+        # Show main menu
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -273,12 +399,15 @@ async def handle_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.warning(f"Invalid price value: {price} (must be positive)")
             raise ValueError("Price must be positive")
         
-        config = user_configs[update.effective_user.id]
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
         config.max_price = price
         save_configs()
         logger.info(f"Successfully updated price to {price}€ for user {update.effective_user.id}")
         
-        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
         await update.message.reply_text(
             f"Maximum price set to {price}€!",
             reply_markup=reply_markup
@@ -296,6 +425,176 @@ async def handle_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=reply_markup
         )
         return WAITING_FOR_PRICE
+
+async def handle_polygon_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the user's polygon URL input"""
+    user_input = update.message.text.strip()
+    logger.info(f"HANDLE_POLYGON_INPUT: Received URL input: '{user_input}' from user {update.effective_user.id}")
+    
+    try:
+        # Basic URL validation
+        if not user_input.startswith(('http://', 'https://')):
+            raise ValueError("Invalid URL format")
+        
+        if 'idealista.pt' not in user_input:
+            raise ValueError("URL must be from idealista.pt")
+        
+        if 'shape=' not in user_input:
+            raise ValueError("URL must contain 'shape=' parameter")
+        
+        # Extract the shape parameter
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(user_input)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        
+        if 'shape' not in query_params:
+            raise ValueError("No 'shape' parameter found in URL")
+        
+        shape_value = query_params['shape'][0]
+        logger.info(f"Extracted shape parameter: {shape_value}")
+        
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        
+        config = user_configs[user_id]
+        config.custom_polygon = shape_value
+        save_configs()
+        logger.info(f"Successfully updated custom polygon for user {update.effective_user.id}")
+        
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+        await update.message.reply_text(
+            "✅ Custom area set successfully! The bot will now search within your defined polygon.",
+            reply_markup=reply_markup
+        )
+        return CHOOSING
+        
+    except ValueError as e:
+        logger.error(f"Error processing polygon URL '{user_input}': {str(e)}")
+        keyboard = [
+            [InlineKeyboardButton("Back", callback_data='back')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"❌ Error: {str(e)}\n\nPlease make sure you're copying the full URL from idealista.pt after drawing your custom area on the map.",
+            reply_markup=reply_markup
+        )
+        return WAITING_FOR_POLYGON_URL
+
+async def user_monitoring_task(user_id: int, chat_id: int):
+    """Background monitoring task for a specific user"""
+    scraper = IdealistaScraper()
+    await scraper.initialize()
+    
+    logger.info(f"Starting monitoring for user {user_id}")
+    
+    try:
+        while True:
+            if user_id not in user_configs:
+                logger.warning(f"User {user_id} no longer has config, stopping monitoring")
+                break
+                
+            config = user_configs[user_id]
+            logger.info(f"Scraping for user {user_id} with frequency {config.update_frequency} minutes")
+            
+            # Debug: Log the URL being used
+            search_url = config.get_base_url()
+            logger.info(f"Generated search URL for user {user_id}: {search_url}")
+            
+            try:
+                await scraper.scrape_listings(config, str(chat_id))
+            except Exception as e:
+                logger.error(f"Error during scraping for user {user_id}: {e}")
+                # Send error notification to user
+                try:
+                    from telegram import Bot
+                    bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+                    await bot.send_message(
+                        chat_id=chat_id, 
+                        text=f"⚠️ Monitoring error: {str(e)}\n\nWill retry in {config.update_frequency} minutes."
+                    )
+                except Exception as send_error:
+                    logger.error(f"Failed to send error message to user {user_id}: {send_error}")
+                # Continue monitoring even if one scrape fails
+            
+            # Wait for the user's configured frequency
+            await asyncio.sleep(config.update_frequency * 60)
+            
+    except asyncio.CancelledError:
+        logger.info(f"Monitoring cancelled for user {user_id}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in monitoring task for user {user_id}: {e}")
+
+async def start_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start monitoring for the user"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Ensure user config exists
+    if user_id not in user_configs:
+        user_configs[user_id] = SearchConfig()
+    
+    # Check if already monitoring
+    if user_id in monitoring_tasks and not monitoring_tasks[user_id].done():
+        await query.message.edit_text("✅ Monitoring is already active!")
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+        await query.message.edit_text(
+            "Welcome to Idealista Monitor Bot! Please choose an option:",
+            reply_markup=reply_markup
+        )
+        return CHOOSING
+    
+    # Debug: Test URL generation before starting monitoring
+    config = user_configs[user_id]
+    test_url = config.get_base_url()
+    logger.info(f"DEBUG: Generated URL for user {user_id}: {test_url}")
+    
+    # Start monitoring task
+    task = asyncio.create_task(user_monitoring_task(user_id, chat_id))
+    monitoring_tasks[user_id] = task
+    
+    await query.message.edit_text(f"🚀 Monitoring started! You'll receive notifications when new listings match your criteria.\n\n🔍 Search URL: {test_url}")
+    
+    # Show main menu
+    reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+    await query.message.edit_text(
+        "Welcome to Idealista Monitor Bot! Please choose an option:",
+        reply_markup=reply_markup
+    )
+    return CHOOSING
+
+async def stop_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stop monitoring for the user"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # Check if monitoring exists
+    if user_id not in monitoring_tasks or monitoring_tasks[user_id].done():
+        await query.message.edit_text("❌ No active monitoring found!")
+    else:
+        # Cancel the monitoring task
+        monitoring_tasks[user_id].cancel()
+        try:
+            await monitoring_tasks[user_id]
+        except asyncio.CancelledError:
+            pass
+        del monitoring_tasks[user_id]
+        
+        await query.message.edit_text("🛑 Monitoring stopped!")
+    
+    # Show main menu
+    reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+    await query.message.edit_text(
+        "Welcome to Idealista Monitor Bot! Please choose an option:",
+        reply_markup=reply_markup
+    )
+    return CHOOSING
 
 def main():
     """Start the bot"""
@@ -318,8 +617,18 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING: [CallbackQueryHandler(button_handler)],
+            SETTING_ROOMS: [CallbackQueryHandler(button_handler)],
+            SETTING_SIZE: [CallbackQueryHandler(button_handler)],
+            SETTING_FURNITURE: [CallbackQueryHandler(button_handler)],
+            SETTING_STATE: [CallbackQueryHandler(button_handler)],
+            SETTING_CITY: [CallbackQueryHandler(button_handler)],
+            SETTING_FREQUENCY: [CallbackQueryHandler(button_handler)],
             WAITING_FOR_PRICE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_price_input),
+                CallbackQueryHandler(button_handler)
+            ],
+            WAITING_FOR_POLYGON_URL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_polygon_input),
                 CallbackQueryHandler(button_handler)
             ]
         },
@@ -352,15 +661,6 @@ def main():
     # Add this BEFORE conversation handler
     application.add_handler(MessageHandler(filters.ALL, debug_all_messages), group=-1)
     
-    # Add debug handler AFTER conversation handler to catch unhandled messages  
-    async def debug_unhandled_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.message and update.message.text:
-            logger.info(f"DEBUG_UNHANDLED: Message '{update.message.text}' from user {update.effective_user.id}")
-            logger.info(f"DEBUG_UNHANDLED: This message was NOT handled by conversation")
-            await update.message.reply_text("Message received but not handled by conversation.")
-    
-    # Add this AFTER conversation handler
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, debug_unhandled_messages), group=1)
     
     application.add_handler(conv_handler)
     

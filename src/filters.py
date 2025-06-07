@@ -1,23 +1,10 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from models import SearchConfig
+from models import SearchConfig, FurnitureType, PropertyState
 
 # Conversation states
-CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE = range(10)
+CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(11)
 
-# Global keyboard definitions
-MAIN_MENU_KEYBOARD = [
-    [InlineKeyboardButton("Set number of rooms", callback_data='rooms')],
-    [InlineKeyboardButton("Set size in square meters", callback_data='size')],
-    [InlineKeyboardButton("Set maximum price", callback_data='price')],
-    [InlineKeyboardButton("Set furniture preference", callback_data='furniture')],
-    [InlineKeyboardButton("Set state of the property", callback_data='state')],
-    [InlineKeyboardButton("Set city", callback_data='city')],
-    [InlineKeyboardButton("Set a custom area (polygon)", callback_data='polygon')],
-    [InlineKeyboardButton("Set update frequency", callback_data='frequency')],
-    [InlineKeyboardButton("Show current settings", callback_data='show')],
-    [InlineKeyboardButton("Start searching", callback_data='start_monitoring')]
-]
 
 
 
@@ -110,8 +97,9 @@ async def set_furniture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.answer()
     
     keyboard = [
-        [InlineKeyboardButton("Furnished", callback_data='furniture_true')],
-        [InlineKeyboardButton("Unfurnished", callback_data='furniture_false')],
+        [InlineKeyboardButton("Furnished", callback_data='furniture_furnished')],
+        [InlineKeyboardButton("Kitchen Furniture Only", callback_data='furniture_kitchen')],
+        [InlineKeyboardButton("Unfurnished", callback_data='furniture_unfurnished')],
         [InlineKeyboardButton("Back", callback_data='back')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -123,20 +111,45 @@ async def set_furniture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return SETTING_FURNITURE
 
 async def set_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle property state setting"""
+    """Handle property state setting with checkbox logic"""
     query = update.callback_query
     await query.answer()
     
-    keyboard = [
-        [InlineKeyboardButton("Good Condition", callback_data='state_good')],
-        [InlineKeyboardButton("Needs Remodeling", callback_data='state_remodel')],
-        [InlineKeyboardButton("New", callback_data='state_new')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
+    # Get current user config to show selected states
+    from bot import user_configs
+    from models import SearchConfig
+    user_id = update.effective_user.id
+    
+    # Ensure user config exists
+    if user_id not in user_configs:
+        user_configs[user_id] = SearchConfig()
+    
+    config = user_configs[user_id]
+    
+    # Create checkbox-style buttons
+    keyboard = []
+    
+    # Good Condition
+    is_good_selected = PropertyState.GOOD in config.property_states
+    good_text = "✅ Good Condition" if is_good_selected else "☐ Good Condition"
+    keyboard.append([InlineKeyboardButton(good_text, callback_data='state_toggle_good')])
+    
+    # Needs Remodeling
+    is_remodel_selected = PropertyState.NEEDS_REMODELING in config.property_states
+    remodel_text = "✅ Needs Remodeling" if is_remodel_selected else "☐ Needs Remodeling"
+    keyboard.append([InlineKeyboardButton(remodel_text, callback_data='state_toggle_remodel')])
+    
+    # New
+    is_new_selected = PropertyState.NEW in config.property_states
+    new_text = "✅ New" if is_new_selected else "☐ New"
+    keyboard.append([InlineKeyboardButton(new_text, callback_data='state_toggle_new')])
+    
+    keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.message.edit_text(
-        "Select property state:",
+        "Select property states (you can select multiple):",
         reply_markup=reply_markup
     )
     return SETTING_STATE
@@ -178,4 +191,32 @@ async def set_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         reply_markup=reply_markup
     )
     return SETTING_FREQUENCY
+
+async def set_polygon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle custom polygon setting"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("Clear Custom Area", callback_data='polygon_clear')],
+        [InlineKeyboardButton("Back", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message_text = (
+        "🗺️ **Custom Area Setup**\n\n"
+        "To set a custom search area:\n"
+        "1. Go to idealista.pt\n"
+        "2. Use the map to draw your custom area\n"
+        "3. Copy the entire URL from your browser\n"
+        "4. Paste it here as a message\n\n"
+        "The URL should contain 'shape=' parameter with your polygon coordinates."
+    )
+    
+    await query.message.edit_text(
+        message_text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return WAITING_FOR_POLYGON_URL
 
