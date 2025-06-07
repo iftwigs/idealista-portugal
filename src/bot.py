@@ -1,11 +1,13 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
 from models import SearchConfig, PropertyState
 import json
 import os
 from typing import Dict
 import logging
 from dotenv import load_dotenv
+from filters import MAIN_MENU_KEYBOARD, set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ContextTypes
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY = range(9)
+CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE = range(10)
 
 # Store user configurations
 user_configs: Dict[int, SearchConfig] = {}
@@ -57,180 +59,39 @@ def save_configs():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation and show main menu"""
+    logger.info(f"START: Command received from user {update.effective_user.id}")
+    logger.info(f"START: Context user_data before: {context.user_data}")
+    
+    # Check if this is a private chat
+    if update.effective_chat.id < 0:
+        await update.message.reply_text(
+            "This bot only works in private chats. Please message me directly!"
+        )
+        return -1  # ConversationHandler.END
+    
     user_id = update.effective_user.id
     if user_id not in user_configs:
         user_configs[user_id] = SearchConfig()
+        logger.info(f"Created new config for user {user_id}")
     
-    keyboard = [
-        [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-        [InlineKeyboardButton("Set Size", callback_data='size')],
-        [InlineKeyboardButton("Set Price", callback_data='price')],
-        [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-        [InlineKeyboardButton("Set Property State", callback_data='state')],
-        [InlineKeyboardButton("Set City", callback_data='city')],
-        [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-        [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-        [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-        [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
     
     await update.message.reply_text(
         "Welcome to Idealista Monitor Bot! Please choose an option:",
         reply_markup=reply_markup
     )
+    logger.info(f"START: Returning CHOOSING state ({CHOOSING})")
     return CHOOSING
 
-async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle room number setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("1+ rooms", callback_data='rooms_1')],
-        [InlineKeyboardButton("2+ rooms", callback_data='rooms_2')],
-        [InlineKeyboardButton("3+ rooms", callback_data='rooms_3')],
-        [InlineKeyboardButton("4+ rooms", callback_data='rooms_4')],
-        [InlineKeyboardButton("5+ rooms", callback_data='rooms_5')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select the minimum number of rooms you want:",
-        reply_markup=reply_markup
-    )
-    return SETTING_ROOMS
-
-async def set_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle size setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("30m²+", callback_data='size_30')],
-        [InlineKeyboardButton("40m²+", callback_data='size_40')],
-        [InlineKeyboardButton("50m²+", callback_data='size_50')],
-        [InlineKeyboardButton("60m²+", callback_data='size_60')],
-        [InlineKeyboardButton("70m²+", callback_data='size_70')],
-        [InlineKeyboardButton("80m²+", callback_data='size_80')],
-        [InlineKeyboardButton("90m²+", callback_data='size_90')],
-        [InlineKeyboardButton("100m²+", callback_data='size_100')],
-        [InlineKeyboardButton("110m²+", callback_data='size_110')],
-        [InlineKeyboardButton("120m²+", callback_data='size_120')],
-        [InlineKeyboardButton("130m²+", callback_data='size_130')],
-        [InlineKeyboardButton("140m²+", callback_data='size_140')],
-        [InlineKeyboardButton("150m²+", callback_data='size_150')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select the minimum size you want:",
-        reply_markup=reply_markup
-    )
-    return SETTING_SIZE
-
-async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle price setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Up to 800€", callback_data='price_800')],
-        [InlineKeyboardButton("Up to 1000€", callback_data='price_1000')],
-        [InlineKeyboardButton("Up to 1200€", callback_data='price_1200')],
-        [InlineKeyboardButton("Up to 1500€", callback_data='price_1500')],
-        [InlineKeyboardButton("Up to 2000€", callback_data='price_2000')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select the maximum price:",
-        reply_markup=reply_markup
-    )
-    return SETTING_PRICE
-
-async def set_furniture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle furniture setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Furnished", callback_data='furniture_true')],
-        [InlineKeyboardButton("Unfurnished", callback_data='furniture_false')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select furniture preference:",
-        reply_markup=reply_markup
-    )
-    return SETTING_FURNITURE
-
-async def set_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle property state setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Good Condition", callback_data='state_good')],
-        [InlineKeyboardButton("Needs Remodeling", callback_data='state_remodel')],
-        [InlineKeyboardButton("New", callback_data='state_new')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select property state:",
-        reply_markup=reply_markup
-    )
-    return SETTING_STATE
-
-async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle city setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Lisboa", callback_data='city_lisboa')],
-        [InlineKeyboardButton("Porto", callback_data='city_porto')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select city:",
-        reply_markup=reply_markup
-    )
-    return SETTING_CITY
-
-async def set_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle update frequency setting"""
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Every 5 minutes", callback_data='freq_5')],
-        [InlineKeyboardButton("Every 10 minutes", callback_data='freq_10')],
-        [InlineKeyboardButton("Every 15 minutes", callback_data='freq_15')],
-        [InlineKeyboardButton("Every 30 minutes", callback_data='freq_30')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.edit_text(
-        "Select update frequency:",
-        reply_markup=reply_markup
-    )
-    return SETTING_FREQUENCY
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle button presses"""
     query = update.callback_query
     await query.answer()
+    
+    logger.info(f"BUTTON: Handler called with data: {query.data}")
+    logger.info(f"BUTTON: Context user_data: {context.user_data}")
+    logger.info(f"BUTTON: User {update.effective_user.id}")
     
     if query.data == 'show':
         config = user_configs[update.effective_user.id]
@@ -248,58 +109,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Handle back button
     if query.data == 'back':
-        # Get current state from context
-        current_state = context.user_data.get('current_state', CHOOSING)
+        logger.info("Back button pressed, returning to main menu")
         
-        # If we're in a setting state, go back to filter menu
-        if current_state in [SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, 
-                           SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY]:
-            # Show filter menu
-            keyboard = [
-                [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-                [InlineKeyboardButton("Set Size", callback_data='size')],
-                [InlineKeyboardButton("Set Price", callback_data='price')],
-                [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-                [InlineKeyboardButton("Set Property State", callback_data='state')],
-                [InlineKeyboardButton("Set City", callback_data='city')],
-                [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-                [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-                [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-                [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.message.edit_text(
-                "Please choose an option:",
-                reply_markup=reply_markup
-            )
-            context.user_data['current_state'] = CHOOSING
-            return CHOOSING
+        # Show main menu
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         
-        # If we're in main menu, stay there
+        await query.edit_message_text(
+            "Please choose an option:",
+            reply_markup=reply_markup
+        )
+        logger.info("Returning to CHOOSING state")
         return CHOOSING
     
     # Handle main menu options
     if query.data == 'rooms':
-        context.user_data['current_state'] = SETTING_ROOMS
         return await set_rooms(update, context)
     elif query.data == 'size':
-        context.user_data['current_state'] = SETTING_SIZE
         return await set_size(update, context)
     elif query.data == 'price':
-        context.user_data['current_state'] = SETTING_PRICE
+        logger.info("Price button pressed, transitioning to set_price")
         return await set_price(update, context)
     elif query.data == 'furniture':
-        context.user_data['current_state'] = SETTING_FURNITURE
         return await set_furniture(update, context)
     elif query.data == 'state':
-        context.user_data['current_state'] = SETTING_STATE
         return await set_state(update, context)
     elif query.data == 'city':
-        context.user_data['current_state'] = SETTING_CITY
         return await set_city(update, context)
     elif query.data == 'frequency':
-        context.user_data['current_state'] = SETTING_FREQUENCY
         return await set_frequency(update, context)
     
     # Handle setting values
@@ -312,19 +148,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text(f"Minimum rooms set to {min_rooms}+!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -340,19 +164,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text(f"Minimum size set to {min_size}m²+!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -367,19 +179,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text("Maximum price updated!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -394,19 +194,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text("Furniture preference updated!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -426,19 +214,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text("Property state updated!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -453,19 +229,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text("City updated!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -480,19 +244,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text("Update frequency updated!")
         
         # Show main menu
-        keyboard = [
-            [InlineKeyboardButton("Set Rooms", callback_data='rooms')],
-            [InlineKeyboardButton("Set Size", callback_data='size')],
-            [InlineKeyboardButton("Set Price", callback_data='price')],
-            [InlineKeyboardButton("Set Furniture", callback_data='furniture')],
-            [InlineKeyboardButton("Set Property State", callback_data='state')],
-            [InlineKeyboardButton("Set City", callback_data='city')],
-            [InlineKeyboardButton("Set Custom Area", callback_data='polygon')],
-            [InlineKeyboardButton("Set Update Frequency", callback_data='frequency')],
-            [InlineKeyboardButton("Show Current Settings", callback_data='show')],
-            [InlineKeyboardButton("Start Monitoring", callback_data='start_monitoring')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
         await query.message.edit_text(
             "Welcome to Idealista Monitor Bot! Please choose an option:",
             reply_markup=reply_markup
@@ -501,33 +253,126 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     return CHOOSING
 
+async def handle_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the user's price input"""
+    user_input = update.message.text.strip()
+    logger.info(f"HANDLE_PRICE_INPUT: Received price input: '{user_input}' from user {update.effective_user.id}")
+    logger.info(f"HANDLE_PRICE_INPUT: Current user_data: {context.user_data}")
+    logger.info(f"HANDLE_PRICE_INPUT: In conversation handler")
+    
+    try:
+        # Remove any non-digit characters except for spaces and common separators
+        cleaned_input = ''.join(c for c in user_input if c.isdigit())
+        if not cleaned_input:
+            raise ValueError("No digits found in input")
+            
+        price = int(cleaned_input)
+        logger.info(f"Parsed price as integer: {price}")
+        
+        if price <= 0:
+            logger.warning(f"Invalid price value: {price} (must be positive)")
+            raise ValueError("Price must be positive")
+        
+        config = user_configs[update.effective_user.id]
+        config.max_price = price
+        save_configs()
+        logger.info(f"Successfully updated price to {price}€ for user {update.effective_user.id}")
+        
+        reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+        await update.message.reply_text(
+            f"Maximum price set to {price}€!",
+            reply_markup=reply_markup
+        )
+        return CHOOSING
+        
+    except ValueError as e:
+        logger.error(f"Error processing price input '{user_input}': {str(e)}")
+        keyboard = [
+            [InlineKeyboardButton("Back", callback_data='back')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Please enter a valid positive number for the price (e.g., 1200):",
+            reply_markup=reply_markup
+        )
+        return WAITING_FOR_PRICE
+
 def main():
     """Start the bot"""
     # Load saved configurations
     load_configs()
     
-    # Create the Application
-    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+    # Check if token exists
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN not found in environment variables")
+        return
     
-    # Add conversation handler
+    logger.info("Starting bot with token...")
+    
+    # Create the Application
+    application = Application.builder().token(token).build()
+    
+    # Add conversation handler with explicit configuration
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING: [CallbackQueryHandler(button_handler)],
-            SETTING_ROOMS: [CallbackQueryHandler(button_handler)],
-            SETTING_SIZE: [CallbackQueryHandler(button_handler)],
-            SETTING_PRICE: [CallbackQueryHandler(button_handler)],
-            SETTING_FURNITURE: [CallbackQueryHandler(button_handler)],
-            SETTING_STATE: [CallbackQueryHandler(button_handler)],
-            SETTING_CITY: [CallbackQueryHandler(button_handler)],
-            SETTING_FREQUENCY: [CallbackQueryHandler(button_handler)]
+            WAITING_FOR_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_price_input),
+                CallbackQueryHandler(button_handler)
+            ]
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[CommandHandler('start', start)],
+        per_chat=True,
+        per_user=True,
+        per_message=False,
+        allow_reentry=True,
+        name="idealista_conv"
     )
+    
+    # Add debug logging for conversation handler
+    logger.info("Setting up conversation handler with states:")
+    for state, handlers in conv_handler.states.items():
+        logger.info(f"State {state}: {[type(h).__name__ for h in handlers]}")
+    
+    # Add debug handler to catch ALL messages before conversation handler
+    async def debug_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message and update.message.text:
+            chat_type = "private" if update.effective_chat.id > 0 else "group"
+            logger.info(f"DEBUG_ALL: Message '{update.message.text}' from user {update.effective_user.id}")
+            logger.info(f"DEBUG_ALL: Chat ID: {update.effective_chat.id} (TYPE: {chat_type})")
+            logger.info(f"DEBUG_ALL: User_data: {context.user_data}")
+            logger.info(f"DEBUG_ALL: Chat_data: {context.chat_data}")
+            # Check if this is in a conversation
+            conv_key = (update.effective_chat.id, update.effective_user.id)
+            logger.info(f"DEBUG_ALL: Conversation key would be: {conv_key}")
+            logger.info(f"DEBUG_ALL: Message will be processed by conversation handler")
+    
+    # Add this BEFORE conversation handler
+    application.add_handler(MessageHandler(filters.ALL, debug_all_messages), group=-1)
+    
+    # Add debug handler AFTER conversation handler to catch unhandled messages  
+    async def debug_unhandled_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message and update.message.text:
+            logger.info(f"DEBUG_UNHANDLED: Message '{update.message.text}' from user {update.effective_user.id}")
+            logger.info(f"DEBUG_UNHANDLED: This message was NOT handled by conversation")
+            await update.message.reply_text("Message received but not handled by conversation.")
+    
+    # Add this AFTER conversation handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, debug_unhandled_messages), group=1)
     
     application.add_handler(conv_handler)
     
+    # Add a simple test handler to debug
+    async def test_handler(update: Update, _: ContextTypes.DEFAULT_TYPE):
+        logger.info(f"Test command received from user {update.effective_user.id}")
+        await update.message.reply_text("Test command works!")
+    
+    application.add_handler(CommandHandler('test', test_handler))
+    
     # Start the Bot
+    logger.info("Starting polling...")
     application.run_polling()
 
 if __name__ == '__main__':
