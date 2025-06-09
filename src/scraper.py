@@ -128,9 +128,14 @@ class IdealistaScraper:
                     size = int(size_text.split("m²")[0].strip()) if "m²" in size_text else 0
                     
                     furniture_text = details_elements[3].get_text(strip=True) if len(details_elements) > 3 else ""
-                    has_furniture = "Furnished" in furniture_text
+                    has_furniture = "Furnished" in furniture_text or "Mobilado" in furniture_text
+                    has_kitchen_furniture = "Kitchen" in furniture_text or "Cozinha" in furniture_text
                     
-                    # Property state filtering is now handled via URL parameters, no need to parse text
+                    # Parse property state for display purposes (filtering is handled via URL parameters)
+                    state_text = details_elements[4].get_text(strip=True) if len(details_elements) > 4 else ""
+                    is_good_state = "Good condition" in state_text or "Bom estado" in state_text
+                    is_new_state = "New" in state_text or "Novo" in state_text
+                    is_remodel_state = "remodel" in state_text.lower() or "reformar" in state_text.lower()
                     
                     # Skip if description contains excluded terms
                     excluded_terms = ["curto prazo", "alquiler temporal", "estancia corta", "short term"]
@@ -190,10 +195,28 @@ class IdealistaScraper:
                     
                     self.seen_listings[chat_id].add(link)
                     
+                    # Determine furniture status
+                    if has_furniture:
+                        furniture_status = "🪑 Furnished"
+                    elif has_kitchen_furniture:
+                        furniture_status = "🍽️ Kitchen furnished"
+                    else:
+                        furniture_status = "🏠 Unfurnished"
+                    
+                    # Determine property state based on parsed information
+                    if is_new_state:
+                        state_status = "🆕 New"
+                    elif is_good_state:
+                        state_status = "✨ Good condition"
+                    elif is_remodel_state:
+                        state_status = "🔨 Needs remodeling"
+                    else:
+                        state_status = "❓ State unknown"
+                    
                     # Send notification
                     message = f"""🏡 *New Apartment Listing!*\n
 📍 {title}\n
-💰 {price} €\n🛏️ {rooms} rooms\n📐 {size}m²\n🏢 {floor}\n
+💰 {price} €\n🛏️ {rooms} rooms\n📐 {size}m²\n🏢 {floor}\n{furniture_status}\n{state_status}\n
 🔗 [Click here to view]({link})"""
                     print(f"DEBUG: About to send telegram message for {link}")
                     await self.send_telegram_message(chat_id, message)
