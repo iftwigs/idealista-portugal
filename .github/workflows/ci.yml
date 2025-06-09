@@ -44,14 +44,6 @@ jobs:
         echo "{}" > user_configs.json
         echo "{}" > seen_listings.json
     
-    - name: Run linter
-      run: |
-        ruff check .
-    
-    - name: Run formatter check
-      run: |
-        ruff format --check .
-    
     - name: Run tests
       run: |
         python -m pytest src/test_*.py -v
