@@ -39,7 +39,8 @@ def get_main_menu_keyboard(user_id: int) -> list:
         [InlineKeyboardButton("Set city", callback_data='city')],
         [InlineKeyboardButton("Set a custom area (polygon)", callback_data='polygon')],
         [InlineKeyboardButton("Set update frequency", callback_data='frequency')],
-        [InlineKeyboardButton("Show current settings", callback_data='show')]
+        [InlineKeyboardButton("Show current settings", callback_data='show')],
+        [InlineKeyboardButton("🔄 Reset settings", callback_data='reset_settings')]
     ]
     
     # Add monitoring button based on current status
@@ -65,11 +66,14 @@ def load_configs():
                     config['property_states'] = [PropertyState(state) for state in config['property_states']]
                 
                 # Handle backwards compatibility for furniture setting
-                if 'has_furniture' in config and 'furniture_type' not in config:
-                    config['furniture_type'] = FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.UNFURNISHED
+                if 'has_furniture' in config and 'furniture_types' not in config:
+                    config['furniture_types'] = [FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.UNFURNISHED]
                     config.pop('has_furniture', None)  # Remove old field
-                elif 'furniture_type' in config:
-                    config['furniture_type'] = FurnitureType(config['furniture_type'])
+                elif 'furniture_type' in config and 'furniture_types' not in config:
+                    config['furniture_types'] = [FurnitureType(config['furniture_type'])]
+                    config.pop('furniture_type', None)  # Remove old field
+                elif 'furniture_types' in config:
+                    config['furniture_types'] = [FurnitureType(ft) for ft in config['furniture_types']]
                 
                 user_configs[int(user_id)] = SearchConfig(**config)
     except FileNotFoundError:
@@ -87,8 +91,8 @@ def save_configs():
             config_dict = config.__dict__.copy()
             # Convert PropertyState list to string values
             config_dict['property_states'] = [state.value for state in config_dict['property_states']]
-            # Convert FurnitureType enum to string value
-            config_dict['furniture_type'] = config_dict['furniture_type'].value
+            # Convert FurnitureType list to string values
+            config_dict['furniture_types'] = [ft.value for ft in config_dict['furniture_types']]
             configs[str(user_id)] = config_dict
         
         with open('user_configs.json', 'w') as f:
@@ -142,7 +146,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Minimum rooms: {config.min_rooms}+\n"
             f"Size: {config.min_size}-{config.max_size}m²\n"
             f"Max Price: {config.max_price}€\n"
-            f"Furniture: {config.furniture_type.name.replace('_', ' ').title()}\n"
+            f"Furniture: {', '.join([ft.name.replace('_', ' ').title() for ft in config.furniture_types])}\n"
             f"State: {', '.join([state.name.replace('_', ' ').title() for state in config.property_states])}\n"
             f"{'Custom Area: Set' if config.custom_polygon else f'City: {config.city}'}\n"
             f"Update Frequency: {config.update_frequency} minutes"
@@ -185,6 +189,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await start_monitoring(update, context)
     elif query.data == 'stop_monitoring':
         return await stop_monitoring(update, context)
+    elif query.data == 'reset_settings':
+        return await reset_settings(update, context)
     
     # Handle setting values
     if query.data.startswith('rooms_'):
@@ -243,28 +249,66 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return CHOOSING
     
-    elif query.data.startswith('furniture_'):
-        _, furniture_type = query.data.split('_')
+    elif query.data.startswith('furniture_toggle_'):
+        _, _, furniture_type = query.data.split('_')
         user_id = update.effective_user.id
+        
+        # Ensure user config exists
         if user_id not in user_configs:
             user_configs[user_id] = SearchConfig()
-        config = user_configs[user_id]
-        if furniture_type == 'furnished':
-            config.furniture_type = FurnitureType.FURNISHED
-        elif furniture_type == 'kitchen':
-            config.furniture_type = FurnitureType.KITCHEN_FURNITURE
-        elif furniture_type == 'unfurnished':
-            config.furniture_type = FurnitureType.UNFURNISHED
-        save_configs()
-        await query.message.edit_text("Furniture preference updated!")
         
-        # Show main menu
-        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
-        await query.message.edit_text(
-            "Welcome to Idealista Monitor Bot! Please choose an option:",
+        config = user_configs[user_id]
+        
+        # Toggle the furniture type in the list
+        if furniture_type == 'furnished':
+            target_furniture = FurnitureType.FURNISHED
+        elif furniture_type == 'kitchen':
+            target_furniture = FurnitureType.KITCHEN_FURNITURE
+        elif furniture_type == 'unfurnished':
+            target_furniture = FurnitureType.UNFURNISHED
+        else:
+            return SETTING_FURNITURE
+            
+        if target_furniture in config.furniture_types:
+            # Remove if already selected (but keep at least one)
+            if len(config.furniture_types) > 1:
+                config.furniture_types.remove(target_furniture)
+        else:
+            # Add if not selected
+            config.furniture_types.append(target_furniture)
+            
+        save_configs()
+        
+        # Debug: Log the current furniture selection
+        logger.info(f"Furniture types updated for user {user_id}: {[ft.name for ft in config.furniture_types]}")
+        
+        # Manually refresh the keyboard to show updated checkboxes
+        keyboard = []
+        
+        # Furnished
+        is_furnished_selected = FurnitureType.FURNISHED in config.furniture_types
+        furnished_text = "✅ Furnished" if is_furnished_selected else "☐ Furnished"
+        keyboard.append([InlineKeyboardButton(furnished_text, callback_data='furniture_toggle_furnished')])
+        
+        # Kitchen Furniture Only
+        is_kitchen_selected = FurnitureType.KITCHEN_FURNITURE in config.furniture_types
+        kitchen_text = "✅ Kitchen Furniture Only" if is_kitchen_selected else "☐ Kitchen Furniture Only"
+        keyboard.append([InlineKeyboardButton(kitchen_text, callback_data='furniture_toggle_kitchen')])
+        
+        # Unfurnished
+        is_unfurnished_selected = FurnitureType.UNFURNISHED in config.furniture_types
+        unfurnished_text = "✅ Unfurnished" if is_unfurnished_selected else "☐ Unfurnished"
+        keyboard.append([InlineKeyboardButton(unfurnished_text, callback_data='furniture_toggle_unfurnished')])
+        
+        keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "Select furniture preferences (you can select multiple):",
             reply_markup=reply_markup
         )
-        return CHOOSING
+        return SETTING_FURNITURE
     
     elif query.data.startswith('state_toggle_'):
         _, _, state = query.data.split('_')
@@ -295,6 +339,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             config.property_states.append(target_state)
             
         save_configs()
+        
+        # Debug: Log the current state selection
+        logger.info(f"Property states updated for user {user_id}: {[state.name for state in config.property_states]}")
         
         # Manually refresh the keyboard without calling set_state to avoid recursion
         keyboard = []
@@ -587,6 +634,29 @@ async def stop_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         del monitoring_tasks[user_id]
         
         await query.message.edit_text("🛑 Monitoring stopped!")
+    
+    # Show main menu
+    reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+    await query.message.edit_text(
+        "Welcome to Idealista Monitor Bot! Please choose an option:",
+        reply_markup=reply_markup
+    )
+    return CHOOSING
+
+async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Reset all settings to default values"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # Reset to default configuration
+    user_configs[user_id] = SearchConfig()
+    save_configs()
+    
+    logger.info(f"Settings reset to defaults for user {user_id}")
+    
+    await query.message.edit_text("🔄 All settings have been reset to default values!")
     
     # Show main menu
     reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))

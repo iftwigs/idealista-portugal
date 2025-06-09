@@ -40,12 +40,14 @@ class SearchConfig:
     min_size: int = 30
     max_size: int = 200
     max_price: int = 2000
-    furniture_type: FurnitureType = FurnitureType.FURNISHED
+    furniture_types: List[FurnitureType] = None
     property_states: List[PropertyState] = None
     
     def __post_init__(self):
         if self.property_states is None:
             self.property_states = [PropertyState.GOOD]
+        if self.furniture_types is None:
+            self.furniture_types = [FurnitureType.FURNISHED]
     
     # Location
     city: str = "lisboa"
@@ -67,36 +69,79 @@ class SearchConfig:
         )
     
     def to_url_params(self) -> str:
-        """Convert configuration to Idealista URL parameters"""
+        """Convert configuration to Idealista URL parameters in the correct order"""
         params = []
         
-        # Add room filters - include all room types from min_rooms up to max_rooms
-        room_types = [f"t{i}" for i in range(self.min_rooms, self.max_rooms + 1)]
-        params.append(",".join(room_types))
+        # 1. Price filter (always include, default 2000)
+        price = self.max_price if self.max_price else 2000
+        params.append(f"preco-max_{price}")
         
-        # Add size filter
-        params.append(f"tamanho-min_{self.min_size}")
+        # 2. Size filter (always include, default 20)
+        min_size = self.min_size if self.min_size else 20
+        params.append(f"tamanho-min_{min_size}")
         
-        # Add price filter
-        params.append(f"preco-max_{self.max_price}")
+        # 3. Room filters (default t0,t1,t2,t3,t4,t5 if not specified)
+        if self.min_rooms == 0:
+            room_types = [f"t{i}" for i in range(0, min(self.max_rooms + 1, 6))]  # t0-t5 max
+        else:
+            room_types = [f"t{i}" for i in range(self.min_rooms, min(self.max_rooms + 1, 6))]
         
-        # Add furniture filter
-        if self.furniture_type != FurnitureType.UNFURNISHED:
-            params.append(f"equipamento_{self.furniture_type.value}")
+        # Add room types in Idealista format: t1,t2,t3,t4-t5 style
+        room_numbers = [int(rt[1:]) for rt in room_types]
+        
+        if len(room_numbers) <= 3:
+            # For 3 or fewer rooms, list them all individually
+            params.append(",".join(room_types))
+        else:
+            # For more than 3 rooms, list first 3 individually, then compress the rest
+            individual_rooms = [f"t{i}" for i in room_numbers[:3]]
+            remaining_rooms = room_numbers[3:]
             
-        # Add property states
-        for state in self.property_states:
-            params.append(state.value)
+            if len(remaining_rooms) == 1:
+                # Just one more room, add it individually
+                individual_rooms.append(f"t{remaining_rooms[0]}")
+                params.append(",".join(individual_rooms))
+            else:
+                # Multiple remaining rooms, compress them
+                range_part = f"t{remaining_rooms[0]}-t{remaining_rooms[-1]}"
+                all_parts = individual_rooms + [range_part]
+                params.append(",".join(all_parts))
+        
+        # 4. Furniture filter (only if specified and not UNFURNISHED only)
+        if self.furniture_types and FurnitureType.UNFURNISHED not in self.furniture_types:
+            furniture_params = []
+            if FurnitureType.FURNISHED in self.furniture_types:
+                furniture_params.append("equipamento_mobilado")
+            if FurnitureType.KITCHEN_FURNITURE in self.furniture_types:
+                furniture_params.append("equipamento_so-cozinha-equipada")
+            
+            # Add furniture parameters
+            params.extend(furniture_params)
+        
+        # 5. Property states (only if any are specified)
+        if self.property_states:
+            state_values = []
+            for state in self.property_states:
+                if state == PropertyState.NEW:
+                    state_values.append("novo")
+                elif state == PropertyState.GOOD:
+                    state_values.append("bom-estado")
+                elif state == PropertyState.NEEDS_REMODELING:
+                    state_values.append("para-reformar")
+            
+            if state_values:
+                params.extend(state_values)  # Add as separate parameters, not comma-separated
+        
+        # 6. Always add long-term rental filter
+        params.append("arrendamento-longa-duracao")
         
         return ",".join(params)
     
     def get_base_url(self) -> str:
         """Get the base URL for Idealista search"""
-        # Start with basic format, just the city for now
-        base_url = f"https://www.idealista.pt/arrendar-casas/{self.city}/"
-        
         if self.custom_polygon:
-            return f"https://www.idealista.pt/areas/arrendar-casas/?shape={self.custom_polygon}&ordem=atualizado-desc"
+            return f"https://www.idealista.pt/areas/arrendar-casas/com-{self.to_url_params()}/?shape={self.custom_polygon}"
         else:
-            # For now, return just the basic city URL to test connectivity
-            return f"{base_url}?ordem=atualizado-desc" 
+            # Build URL in the exact Idealista format
+            params = self.to_url_params()
+            return f"https://www.idealista.pt/arrendar-casas/{self.city}/com-{params}/" 

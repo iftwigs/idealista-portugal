@@ -42,16 +42,16 @@ async def fetch_page(session: aiohttp.ClientSession, url: str) -> Optional[str]:
     try:
         async with session.get(url, headers=headers) as response:
             if response.status == 429:
-                raise Exception("Too many requests")
+                raise Exception(f"Too many requests for URL: {url}")
             if response.status == 403:
-                logger.warning("Access forbidden (403) - Rate limit exceeded")
+                logger.warning(f"Access forbidden (403) - Rate limit exceeded for URL: {url}")
                 return None
             if response.status != 200:
-                logger.error(f"Error fetching page: {response.status}")
+                logger.error(f"Error fetching page: {response.status} for URL: {url}")
                 return None
             return await response.text()
     except Exception as e:
-        logger.error(f"Error fetching page: {e}")
+        logger.error(f"Error fetching page: {e} for URL: {url}")
         raise
 
 class IdealistaScraper:
@@ -130,8 +130,7 @@ class IdealistaScraper:
                     furniture_text = details_elements[3].get_text(strip=True) if len(details_elements) > 3 else ""
                     has_furniture = "Furnished" in furniture_text
                     
-                    state_text = details_elements[4].get_text(strip=True) if len(details_elements) > 4 else ""
-                    is_good_state = "Good condition" in state_text
+                    # Property state filtering is now handled via URL parameters, no need to parse text
                     
                     # Skip if description contains excluded terms
                     excluded_terms = ["curto prazo", "alquiler temporal", "estancia corta", "short term"]
@@ -156,21 +155,28 @@ class IdealistaScraper:
                     if size < config.min_size or size > config.max_size:
                         print(f"DEBUG: Skipping {link} because size {size} not in range [{config.min_size}, {config.max_size}]")
                         continue
-                    # Apply furniture filter
-                    if config.furniture_type == FurnitureType.FURNISHED and not has_furniture:
+                    # Apply furniture filter based on selected furniture types
+                    # If UNFURNISHED is the only selection, skip furnished apartments
+                    if (len(config.furniture_types) == 1 and 
+                        FurnitureType.UNFURNISHED in config.furniture_types and 
+                        has_furniture):
+                        print(f"DEBUG: Skipping {link} because unfurnished only required but apartment is furnished")
+                        continue
+                    
+                    # If FURNISHED is selected but apartment is not furnished, skip
+                    if (FurnitureType.FURNISHED in config.furniture_types and 
+                        not has_furniture and 
+                        FurnitureType.UNFURNISHED not in config.furniture_types):
                         print(f"DEBUG: Skipping {link} because furnished required but not present")
                         continue
-                    elif config.furniture_type == FurnitureType.UNFURNISHED and has_furniture:
-                        print(f"DEBUG: Skipping {link} because unfurnished required but furnished")
-                        continue
+                    
                     # Note: KITCHEN_FURNITURE filtering would need more detailed parsing of furniture details
                     
-                    # Apply property state filter (check if listing state matches any of the selected states)
-                    if not any(state == PropertyState.GOOD and is_good_state for state in config.property_states):
-                        # For now, we only handle GOOD state detection. Other states would need parsing enhancement
-                        if PropertyState.GOOD in config.property_states and not is_good_state:
-                            print(f"DEBUG: Skipping {link} because good state required but not present")
-                            continue
+                    # Property state filtering is now handled via URL parameters - no need to filter here
+                    
+                    # LOG: This listing matches all criteria and will be sent
+                    logger.info(f"MATCH FOUND for user {chat_id}: {title} - {price}€, {rooms} rooms, {size}m², {floor}")
+                    logger.info(f"MATCH DETAILS: URL={link}")
                     
                     listings.append({
                         "title": title,
@@ -196,6 +202,12 @@ class IdealistaScraper:
                     logger.error(f"Error parsing listing: {e}")
             
             await self.save_seen_listings()
+            
+            # Log summary of scraping results
+            total_processed = len(soup.find_all("article", class_="item" if "item" in html else "listing-item"))
+            total_matches = len(listings)
+            logger.info(f"SCRAPING SUMMARY for user {chat_id}: Processed {total_processed} listings, found {total_matches} matches")
+            
             return listings
 
 async def main():
@@ -222,11 +234,14 @@ async def main():
             elif 'property_states' in config_data:
                 config_data['property_states'] = [PropertyState(state) for state in config_data['property_states']]
             
-            if 'has_furniture' in config_data and 'furniture_type' not in config_data:
-                config_data['furniture_type'] = FurnitureType.FURNISHED if config_data['has_furniture'] else FurnitureType.UNFURNISHED
+            if 'has_furniture' in config_data and 'furniture_types' not in config_data:
+                config_data['furniture_types'] = [FurnitureType.FURNISHED if config_data['has_furniture'] else FurnitureType.UNFURNISHED]
                 config_data.pop('has_furniture', None)
-            elif 'furniture_type' in config_data:
-                config_data['furniture_type'] = FurnitureType(config_data['furniture_type'])
+            elif 'furniture_type' in config_data and 'furniture_types' not in config_data:
+                config_data['furniture_types'] = [FurnitureType(config_data['furniture_type'])]
+                config_data.pop('furniture_type', None)
+            elif 'furniture_types' in config_data:
+                config_data['furniture_types'] = [FurnitureType(ft) for ft in config_data['furniture_types']]
             
             config = SearchConfig(**config_data)
             await scraper.scrape_listings(config, chat_id)

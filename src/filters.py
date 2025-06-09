@@ -14,6 +14,7 @@ async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.answer()
     
     keyboard = [
+        [InlineKeyboardButton("0+ rooms (T0/Studio)", callback_data='rooms_0')],
         [InlineKeyboardButton("1+ rooms", callback_data='rooms_1')],
         [InlineKeyboardButton("2+ rooms", callback_data='rooms_2')],
         [InlineKeyboardButton("3+ rooms", callback_data='rooms_3')],
@@ -92,20 +93,45 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return WAITING_FOR_PRICE
 
 async def set_furniture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle furniture setting"""
+    """Handle furniture setting with checkbox logic"""
     query = update.callback_query
     await query.answer()
     
-    keyboard = [
-        [InlineKeyboardButton("Furnished", callback_data='furniture_furnished')],
-        [InlineKeyboardButton("Kitchen Furniture Only", callback_data='furniture_kitchen')],
-        [InlineKeyboardButton("Unfurnished", callback_data='furniture_unfurnished')],
-        [InlineKeyboardButton("Back", callback_data='back')]
-    ]
+    # Get current user config to show selected furniture types
+    from bot import user_configs
+    from models import SearchConfig
+    user_id = update.effective_user.id
+    
+    # Ensure user config exists
+    if user_id not in user_configs:
+        user_configs[user_id] = SearchConfig()
+    
+    config = user_configs[user_id]
+    
+    # Create checkbox-style buttons
+    keyboard = []
+    
+    # Furnished
+    is_furnished_selected = FurnitureType.FURNISHED in config.furniture_types
+    furnished_text = "✅ Furnished" if is_furnished_selected else "☐ Furnished"
+    keyboard.append([InlineKeyboardButton(furnished_text, callback_data='furniture_toggle_furnished')])
+    
+    # Kitchen Furniture Only
+    is_kitchen_selected = FurnitureType.KITCHEN_FURNITURE in config.furniture_types
+    kitchen_text = "✅ Kitchen Furniture Only" if is_kitchen_selected else "☐ Kitchen Furniture Only"
+    keyboard.append([InlineKeyboardButton(kitchen_text, callback_data='furniture_toggle_kitchen')])
+    
+    # Unfurnished
+    is_unfurnished_selected = FurnitureType.UNFURNISHED in config.furniture_types
+    unfurnished_text = "✅ Unfurnished" if is_unfurnished_selected else "☐ Unfurnished"
+    keyboard.append([InlineKeyboardButton(unfurnished_text, callback_data='furniture_toggle_unfurnished')])
+    
+    keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.message.edit_text(
-        "Select furniture preference:",
+        "Select furniture preferences (you can select multiple):",
         reply_markup=reply_markup
     )
     return SETTING_FURNITURE
