@@ -1,0 +1,164 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: [3.9, 3.10, 3.11]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio
+    
+    - name: Create test environment files
+      run: |
+        echo "TELEGRAM_BOT_TOKEN=test_token_for_ci" > .env
+        echo "{}" > user_configs.json
+        echo "{}" > seen_listings.json
+    
+    - name: Run linter
+      run: |
+        ruff check .
+    
+    - name: Run formatter check
+      run: |
+        ruff format --check .
+    
+    - name: Run tests with coverage
+      run: |
+        python -m pytest src/test_*.py -v --cov=src --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety
+    
+    - name: Run Bandit security scan
+      run: |
+        bandit -r src/ -f json -o bandit-report.json || true
+        bandit -r src/
+    
+    - name: Check for known security vulnerabilities
+      run: |
+        pip install -r requirements.txt
+        safety check
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image
+      run: |
+        docker build -t idealista-notifier:${{ github.sha }} .
+    
+    - name: Test Docker image
+      run: |
+        # Test that the image can be created and runs without immediate errors
+        docker run --rm -e TELEGRAM_BOT_TOKEN=test_token idealista-notifier:${{ github.sha }} python --version
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    services:
+      # Add any services needed for integration tests
+      redis:
+        image: redis:alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio
+    
+    - name: Run integration tests
+      run: |
+        # Run integration tests that test the full bot workflow
+        python -m pytest src/test_bot_flow.py::TestMonitoringFlow -v
+        python -m pytest src/test_scraper_enhanced.py::TestTelegramIntegration -v
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || 'test_token' }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test, security-scan, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy notification
+      run: |
+        echo "Deployment would happen here for production"
+        echo "Current commit: ${{ github.sha }}"
+        echo "All tests passed, ready for deployment"
+    
+    # Add actual deployment steps here, such as:
+    # - Building and pushing Docker images to a registry
+    # - Deploying to a cloud platform
+    # - Updating a Kubernetes deployment
+    # - Notifying deployment channels
