@@ -1,21 +1,22 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from scraper import IdealistaScraper, fetch_page
-from models import SearchConfig, PropertyState, SizeRange
+from models import SearchConfig, PropertyState, FurnitureType, SizeRange
 import aiohttp
 
 # Fixtures
 @pytest.fixture
 def mock_config():
     """Create a mock search config"""
+    from models import FurnitureType
     return SearchConfig(
         min_rooms=2,
         max_rooms=10,
         min_size=50,
         max_size=80,
         max_price=1000,
-        has_furniture=True,
-        property_state=PropertyState.GOOD,
+        furniture_types=[FurnitureType.FURNISHED],
+        property_states=[PropertyState.GOOD],
         city="lisboa",
         update_frequency=10
     )
@@ -167,8 +168,8 @@ async def test_scraper_filter_criteria(mock_config, mock_html):
         print(f"Initial config: {mock_config}")
         # Update config to filter out the second listing
         mock_config.max_price = 1000  # Second listing is 1200€
-        mock_config.has_furniture = True  # Second listing is unfurnished
-        mock_config.property_state = PropertyState.GOOD  # Second listing needs remodeling
+        mock_config.furniture_types = [FurnitureType.FURNISHED]  # Second listing is unfurnished
+        mock_config.property_states = [PropertyState.GOOD]  # Second listing needs remodeling
         print(f"Updated config: {mock_config}")
         print("Starting scrape_listings...")
         await scraper.scrape_listings(mock_config, "123456")
@@ -237,8 +238,8 @@ async def test_scraper_size_filtering():
             min_rooms=2,
             max_rooms=10,
             max_price=2000,
-            has_furniture=True,
-            property_state=PropertyState.GOOD,
+            furniture_types=[FurnitureType.FURNISHED],
+            property_states=[PropertyState.GOOD],
             city="lisboa"
         )
         
@@ -265,8 +266,8 @@ async def test_scraper_size_filtering():
             min_rooms=2,
             max_rooms=10,
             max_price=2000,
-            has_furniture=True,
-            property_state=PropertyState.GOOD,
+            furniture_types=[FurnitureType.FURNISHED],
+            property_states=[PropertyState.GOOD],
             city="lisboa"
         )
         

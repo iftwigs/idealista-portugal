@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import json
 import tempfile
 import os
+import asyncio
 
 from telegram import Update, CallbackQuery, Message, User, Chat
 from telegram.ext import ContextTypes
@@ -55,10 +56,23 @@ def temp_config_file():
             with open(temp_path, 'r') as f:
                 configs = json.load(f)
                 for user_id, config in configs.items():
-                    if 'property_states' in config:
+                    # Handle backwards compatibility for property_state -> property_states
+                    if 'property_state' in config and 'property_states' not in config:
+                        config['property_states'] = [PropertyState(config['property_state'])]
+                        config.pop('property_state', None)  # Remove old field
+                    elif 'property_states' in config:
                         config['property_states'] = [PropertyState(state) for state in config['property_states']]
-                    if 'furniture_types' in config:
+                    
+                    # Handle backwards compatibility for furniture setting
+                    if 'has_furniture' in config and 'furniture_types' not in config:
+                        config['furniture_types'] = [FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.UNFURNISHED]
+                        config.pop('has_furniture', None)  # Remove old field
+                    elif 'furniture_type' in config and 'furniture_types' not in config:
+                        config['furniture_types'] = [FurnitureType(config['furniture_type'])]
+                        config.pop('furniture_type', None)  # Remove old field
+                    elif 'furniture_types' in config:
                         config['furniture_types'] = [FurnitureType(ft) for ft in config['furniture_types']]
+                    
                     bot.user_configs[int(user_id)] = SearchConfig(**config)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -348,23 +362,32 @@ class TestMonitoringFlow:
     @pytest.mark.asyncio
     async def test_stop_monitoring(self, mock_update, mock_context):
         """Test stopping monitoring"""
-        # Set up active monitoring
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        mock_task.cancel = MagicMock()
-        bot.monitoring_tasks[12345] = mock_task
+        # Create a real task that we can cancel and await
+        async def dummy_task():
+            await asyncio.sleep(1000)  # Task that would run forever
+            
+        task = asyncio.create_task(dummy_task())
+        bot.monitoring_tasks[12345] = task
         
         mock_update.callback_query.data = 'stop_monitoring'
         result = await bot.button_handler(mock_update, mock_context)
         
         assert result == bot.CHOOSING
-        mock_task.cancel.assert_called_once()
+        assert task.cancelled()  # Task should be cancelled
+        
+        # Clean up
+        if 12345 in bot.monitoring_tasks:
+            del bot.monitoring_tasks[12345]
     
     def test_dynamic_menu_generation(self):
         """Test dynamic main menu keyboard generation"""
+        # Clear any existing monitoring for this user
+        if 12345 in bot.monitoring_tasks:
+            del bot.monitoring_tasks[12345]
+            
         # Test without monitoring
         keyboard = bot.get_main_menu_keyboard(12345)
-        start_button_found = any("Start searching" in str(button) for row in keyboard for button in row)
+        start_button_found = any("🚀 Start searching" in str(button) for row in keyboard for button in row)
         assert start_button_found
         
         # Test with active monitoring
@@ -373,5 +396,5 @@ class TestMonitoringFlow:
         bot.monitoring_tasks[12345] = mock_task
         
         keyboard = bot.get_main_menu_keyboard(12345)
-        stop_button_found = any("Stop monitoring" in str(button) for row in keyboard for button in row)
+        stop_button_found = any("🛑 Stop monitoring" in str(button) for row in keyboard for button in row)
         assert stop_button_found

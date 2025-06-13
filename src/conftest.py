@@ -1,8 +1,8 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 from telegram import Update, CallbackQuery, Message, User
 from telegram.ext import CallbackContext
-from models import SearchConfig, PropertyState
+from models import SearchConfig, PropertyState, FurnitureType
 
 @pytest.fixture
 def mock_update():
@@ -10,9 +10,16 @@ def mock_update():
     update = MagicMock(spec=Update)
     update.effective_user = MagicMock(spec=User)
     update.effective_user.id = 123456
+    update.effective_chat = MagicMock()
+    update.effective_chat.id = 123456
     update.message = MagicMock(spec=Message)
+    update.message.reply_text = AsyncMock()
     update.callback_query = MagicMock(spec=CallbackQuery)
     update.callback_query.message = MagicMock(spec=Message)
+    update.callback_query.message.edit_text = AsyncMock()
+    update.callback_query.message.reply_text = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+    update.callback_query.answer = AsyncMock()
     update.callback_query.from_user = MagicMock(spec=User)
     update.callback_query.from_user.id = 123456
     return update
@@ -22,6 +29,7 @@ def mock_context():
     """Create a mock context object"""
     context = MagicMock(spec=CallbackContext)
     context.user_data = {}
+    context.chat_data = {}
     return context
 
 @pytest.fixture
@@ -33,8 +41,8 @@ def mock_config():
         min_size=50,
         max_size=80,
         max_price=1000,
-        has_furniture=True,
-        property_state=PropertyState.GOOD,
+        furniture_types=[FurnitureType.FURNISHED],
+        property_states=[PropertyState.GOOD],
         city="lisboa",
         update_frequency=10
     )

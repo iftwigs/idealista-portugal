@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import os
-from typing import Dict, Optional
+import time
+import random
+from typing import Dict, Optional, List
 
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from ratelimit import limits, sleep_and_retry
 from telegram import Bot
 
 from models import SearchConfig, PropertyState, FurnitureType
@@ -20,43 +21,132 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 logging.basicConfig(level=logging.INFO, format="|%(levelname)s| %(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Rate limiting decorator
-ONE_MINUTE = 60
-MAX_REQUESTS_PER_MINUTE = 2
+class AdaptiveRateLimiter:
+    """Adaptive rate limiting that adjusts based on server responses"""
+    
+    def __init__(self):
+        self.user_last_request: Dict[str, float] = {}
+        self.global_last_request = 0
+        self.min_delay_seconds = 60  # Start with 60 seconds between requests per user
+        self.global_min_delay = 30   # Minimum 30 seconds between ANY requests
+        self.backoff_multiplier = 2  # Multiply delay on 403 errors
+        self.max_delay = 300         # Maximum 5 minutes delay
+        self.recent_errors = 0       # Track recent 403 errors
+        self.last_error_time = 0     # When last error occurred
+    
+    async def wait_if_needed(self, user_id: str) -> None:
+        """Wait if needed with adaptive rate limiting"""
+        current_time = time.time()
+        user_id_str = str(user_id)
+        
+        # Adjust delay based on recent errors
+        if self.recent_errors > 0 and (current_time - self.last_error_time) < 300:
+            # Recent errors - be more conservative
+            adjusted_delay = min(self.min_delay_seconds * (self.backoff_multiplier ** self.recent_errors), self.max_delay)
+            logger.warning(f"Adaptive rate limiting: Using {adjusted_delay}s delay due to {self.recent_errors} recent errors")
+        else:
+            # No recent errors - use normal delay
+            adjusted_delay = self.min_delay_seconds
+            if self.recent_errors > 0:
+                # Reset error count if enough time has passed
+                self.recent_errors = 0
+                logger.info("Rate limit errors cleared - returning to normal delay")
+        
+        # Per-user delay
+        if user_id_str in self.user_last_request:
+            time_since_last = current_time - self.user_last_request[user_id_str]
+            if time_since_last < adjusted_delay:
+                wait_time = adjusted_delay - time_since_last
+                logger.info(f"Rate limiting: User {user_id} waiting {wait_time:.1f}s")
+                await asyncio.sleep(wait_time)
+        
+        # Global delay (prevent too many requests overall)
+        global_time_since_last = current_time - self.global_last_request
+        if global_time_since_last < self.global_min_delay:
+            global_wait_time = self.global_min_delay - global_time_since_last
+            logger.info(f"Global rate limiting: waiting {global_wait_time:.1f}s")
+            await asyncio.sleep(global_wait_time)
+        
+        # Update timestamps
+        self.user_last_request[user_id_str] = time.time()
+        self.global_last_request = time.time()
+    
+    def record_error(self):
+        """Record a 403 error to adjust future delays"""
+        self.recent_errors += 1
+        self.last_error_time = time.time()
+        logger.warning(f"Rate limit error recorded (total: {self.recent_errors}). Will increase delays.")
 
-@sleep_and_retry
-@limits(calls=MAX_REQUESTS_PER_MINUTE, period=ONE_MINUTE)
-async def fetch_page(session: aiohttp.ClientSession, url: str) -> Optional[str]:
-    """Fetch a page with rate limiting"""
+# Global rate limiter instance
+global_rate_limiter = AdaptiveRateLimiter()
+
+# List of realistic user agents to rotate
+USER_AGENTS = [
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+]
+
+async def fetch_page(session: aiohttp.ClientSession, url: str, user_id: str = None) -> Optional[str]:
+    """Fetch a page with adaptive rate limiting and browser-like headers"""
+    # Apply per-user rate limiting if user_id provided
+    if user_id:
+        await global_rate_limiter.wait_if_needed(user_id)
+    
+    # Add small random delay to appear more human-like
+    human_delay = random.uniform(1, 3)  # 1-3 seconds random delay
+    await asyncio.sleep(human_delay)
+    
+    # Rotate user agent to appear more like different browsers
+    user_agent = random.choice(USER_AGENTS)
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': user_agent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'pt-PT,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
         'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
         'Cache-Control': 'max-age=0',
-        'Referer': 'https://www.idealista.pt/'
+        'Pragma': 'no-cache'
     }
     
     try:
         async with session.get(url, headers=headers) as response:
             if response.status == 429:
-                raise Exception(f"Too many requests for URL: {url}")
+                logger.warning(f"Rate limit (429) for URL: {url}")
+                global_rate_limiter.record_error()
+                return None
             if response.status == 403:
                 logger.warning(f"Access forbidden (403) - Rate limit exceeded for URL: {url}")
+                global_rate_limiter.record_error()
+                # Wait longer before next request
+                logger.info("Implementing emergency backoff due to 403 error")
+                await asyncio.sleep(120)  # Emergency 2-minute wait
                 return None
             if response.status != 200:
                 logger.error(f"Error fetching page: {response.status} for URL: {url}")
                 return None
+            
+            # Success - log it
+            logger.info(f"Successfully fetched page (HTTP {response.status}) for user {user_id}")
             return await response.text()
     except Exception as e:
         logger.error(f"Error fetching page: {e} for URL: {url}")
-        raise
+        # Don't raise - return None to handle gracefully
+        return None
 
 class IdealistaScraper:
     def __init__(self):
         self.seen_listings: Dict[str, set] = {}  # user_id -> set of seen listing URLs
+        self.max_seen_per_user = 1000  # Maximum seen listings per user to prevent memory leaks
         
     async def initialize(self):
         """Initialize the scraper by loading seen listings"""
@@ -65,6 +155,14 @@ class IdealistaScraper:
                 self.seen_listings = {k: set(v) for k, v in json.load(f).items()}
         except (FileNotFoundError, json.JSONDecodeError):
             self.seen_listings = {}
+    
+    async def cleanup_seen_listings(self, user_id: str):
+        """Clean up seen listings for a user to prevent memory leaks"""
+        if user_id in self.seen_listings and len(self.seen_listings[user_id]) > self.max_seen_per_user:
+            # Keep only the most recent 500 listings
+            seen_list = list(self.seen_listings[user_id])
+            self.seen_listings[user_id] = set(seen_list[-500:])
+            logger.info(f"Cleaned up seen listings for user {user_id}: kept 500 most recent out of {len(seen_list)}")
     
     async def save_seen_listings(self):
         """Save seen listings to file"""
@@ -90,9 +188,10 @@ class IdealistaScraper:
         url = config.get_base_url()
         
         async with aiohttp.ClientSession() as session:
-            html = await fetch_page(session, url)
+            html = await fetch_page(session, url, user_id=chat_id)
             if not html:
-                return
+                logger.warning(f"Failed to fetch page for user {chat_id} - will retry next cycle")
+                return []
             
             soup = BeautifulSoup(html, "html.parser")
             listings = []
@@ -221,8 +320,18 @@ class IdealistaScraper:
                     print(f"DEBUG: About to send telegram message for {link}")
                     await self.send_telegram_message(chat_id, message)
                     
+                    # Track listing notification in stats
+                    try:
+                        from user_stats import stats_manager
+                        stats_manager.record_user_activity(chat_id, 'listing_received')
+                    except ImportError:
+                        pass  # Stats module not available
+                    
                 except Exception as e:
                     logger.error(f"Error parsing listing: {e}")
+            
+            # Clean up seen listings to prevent memory leaks
+            await self.cleanup_seen_listings(chat_id)
             
             await self.save_seen_listings()
             

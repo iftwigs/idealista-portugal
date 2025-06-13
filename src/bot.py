@@ -6,10 +6,14 @@ from typing import Dict
 import logging
 import asyncio
 from dotenv import load_dotenv
+
+# Configuration file locking for multi-user safety
+config_lock = asyncio.Lock()
 from filters import set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency, set_polygon
 from scraper import IdealistaScraper
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
+from user_stats import stats_manager
 
 # Load environment variables
 load_dotenv()
@@ -40,6 +44,8 @@ def get_main_menu_keyboard(user_id: int) -> list:
         [InlineKeyboardButton("Set a custom area (polygon)", callback_data='polygon')],
         [InlineKeyboardButton("Set update frequency", callback_data='frequency')],
         [InlineKeyboardButton("Show current settings", callback_data='show')],
+        [InlineKeyboardButton("📊 Bot Statistics", callback_data='stats')],
+        [InlineKeyboardButton("🔍 Check Monitoring Status", callback_data='check_status')],
         [InlineKeyboardButton("🔄 Reset settings", callback_data='reset_settings')]
     ]
     
@@ -75,30 +81,40 @@ def load_configs():
                 elif 'furniture_types' in config:
                     config['furniture_types'] = [FurnitureType(ft) for ft in config['furniture_types']]
                 
+                # Remove any unknown fields that might cause errors
+                valid_fields = {
+                    'min_rooms', 'max_rooms', 'min_size', 'max_size', 'max_price',
+                    'furniture_types', 'property_states', 'city', 'custom_polygon', 'update_frequency'
+                }
+                config = {k: v for k, v in config.items() if k in valid_fields}
+                
                 user_configs[int(user_id)] = SearchConfig(**config)
+                logger.info(f"Loaded config for user {user_id}: {config}")
     except FileNotFoundError:
         # Create empty config file if it doesn't exist
-        save_configs()
+        asyncio.create_task(save_configs())
     except json.JSONDecodeError:
         logger.warning("Invalid JSON in user_configs.json, creating new file")
-        save_configs()
+        asyncio.create_task(save_configs())
 
-def save_configs():
-    """Save configurations to file"""
-    try:
-        configs = {}
-        for user_id, config in user_configs.items():
-            config_dict = config.__dict__.copy()
-            # Convert PropertyState list to string values
-            config_dict['property_states'] = [state.value for state in config_dict['property_states']]
-            # Convert FurnitureType list to string values
-            config_dict['furniture_types'] = [ft.value for ft in config_dict['furniture_types']]
-            configs[str(user_id)] = config_dict
-        
-        with open('user_configs.json', 'w') as f:
-            json.dump(configs, f, indent=2)
-    except Exception as e:
-        logger.error(f"Error saving configurations: {e}")
+async def save_configs():
+    """Save configurations to file with locking for multi-user safety"""
+    async with config_lock:
+        try:
+            configs = {}
+            for user_id, config in user_configs.items():
+                config_dict = config.__dict__.copy()
+                # Convert PropertyState list to string values
+                config_dict['property_states'] = [state.value for state in config_dict['property_states']]
+                # Convert FurnitureType list to string values
+                config_dict['furniture_types'] = [ft.value for ft in config_dict['furniture_types']]
+                configs[str(user_id)] = config_dict
+            
+            with open('user_configs.json', 'w') as f:
+                json.dump(configs, f, indent=2)
+            logger.info(f"Saved configurations for {len(configs)} users")
+        except Exception as e:
+            logger.error(f"Error saving configurations: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation and show main menu"""
@@ -115,14 +131,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if user_id not in user_configs:
         user_configs[user_id] = SearchConfig()
-        logger.info(f"Created new config for user {user_id}")
+        stats_manager.record_user_activity(user_id, 'first_use')
+        logger.info(f"MULTI-USER: Created new config for user {user_id} (Total users: {len(user_configs)})")
+    else:
+        stats_manager.record_user_activity(user_id, 'bot_access')
+        logger.info(f"MULTI-USER: Existing user {user_id} accessing bot (Total users: {len(user_configs)})")
     
     reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
     
-    await update.message.reply_text(
-        "Welcome to Idealista Monitor Bot! Please choose an option:",
-        reply_markup=reply_markup
-    )
+    try:
+        await update.message.reply_text(
+            "Welcome to Idealista Monitor Bot! Please choose an option:",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Network error sending start message to user {user_id}: {e}")
+        # Try to send a simpler message without keyboard
+        try:
+            await update.message.reply_text(
+                "Welcome to Idealista Monitor Bot! There seems to be a network issue. Please try again in a moment."
+            )
+        except Exception as e2:
+            logger.error(f"Failed to send any message to user {user_id}: {e2}")
+            # Still return CHOOSING so the conversation handler continues
+            pass
     logger.info(f"START: Returning CHOOSING state ({CHOOSING})")
     return CHOOSING
 
@@ -191,6 +223,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await stop_monitoring(update, context)
     elif query.data == 'reset_settings':
         return await reset_settings(update, context)
+    elif query.data == 'stats':
+        return await show_stats(update, context)
+    elif query.data == 'check_status':
+        return await check_monitoring_status(update, context)
+    elif query.data == 'test_search':
+        return await test_search_now(update, context)
     
     # Handle setting values
     if query.data.startswith('rooms_'):
@@ -201,7 +239,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         config = user_configs[user_id]
         config.min_rooms = int(min_rooms)
         config.max_rooms = 10  # Set a high maximum to include all rooms above minimum
-        save_configs()
+        await save_configs()
         await query.message.edit_text(f"Minimum rooms set to {min_rooms}+!")
         
         # Show main menu
@@ -220,7 +258,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         config = user_configs[user_id]
         config.min_size = int(min_size)
         config.max_size = 200  # Set a high maximum to include all sizes above minimum
-        save_configs()
+        await save_configs()
         await query.message.edit_text(f"Minimum size set to {min_size}m²+!")
         
         # Show main menu
@@ -238,7 +276,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_configs[user_id] = SearchConfig()
         config = user_configs[user_id]
         config.max_price = int(max_price)
-        save_configs()
+        await save_configs()
         await query.message.edit_text("Maximum price updated!")
         
         # Show main menu
@@ -277,7 +315,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Add if not selected
             config.furniture_types.append(target_furniture)
             
-        save_configs()
+        await save_configs()
         
         # Debug: Log the current furniture selection
         logger.info(f"Furniture types updated for user {user_id}: {[ft.name for ft in config.furniture_types]}")
@@ -338,7 +376,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Add if not selected
             config.property_states.append(target_state)
             
-        save_configs()
+        await save_configs()
         
         # Debug: Log the current state selection
         logger.info(f"Property states updated for user {user_id}: {[state.name for state in config.property_states]}")
@@ -378,7 +416,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_configs[user_id] = SearchConfig()
         config = user_configs[user_id]
         config.city = city
-        save_configs()
+        await save_configs()
         await query.message.edit_text("City updated!")
         
         # Show main menu
@@ -396,7 +434,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_configs[user_id] = SearchConfig()
         config = user_configs[user_id]
         config.update_frequency = int(minutes)
-        save_configs()
+        await save_configs()
         await query.message.edit_text("Update frequency updated!")
         
         # Show main menu
@@ -413,7 +451,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_configs[user_id] = SearchConfig()
         config = user_configs[user_id]
         config.custom_polygon = None
-        save_configs()
+        await save_configs()
         await query.message.edit_text("Custom area cleared!")
         
         # Show main menu
@@ -451,7 +489,7 @@ async def handle_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_configs[user_id] = SearchConfig()
         config = user_configs[user_id]
         config.max_price = price
-        save_configs()
+        await save_configs()
         logger.info(f"Successfully updated price to {price}€ for user {update.effective_user.id}")
         
         reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
@@ -506,7 +544,7 @@ async def handle_polygon_input(update: Update, context: ContextTypes.DEFAULT_TYP
         
         config = user_configs[user_id]
         config.custom_polygon = shape_value
-        save_configs()
+        await save_configs()
         logger.info(f"Successfully updated custom polygon for user {update.effective_user.id}")
         
         reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
@@ -533,7 +571,7 @@ async def user_monitoring_task(user_id: int, chat_id: int):
     scraper = IdealistaScraper()
     await scraper.initialize()
     
-    logger.info(f"Starting monitoring for user {user_id}")
+    logger.info(f"MONITORING STARTED: User {user_id} monitoring task is now running")
     
     try:
         while True:
@@ -542,26 +580,35 @@ async def user_monitoring_task(user_id: int, chat_id: int):
                 break
                 
             config = user_configs[user_id]
-            logger.info(f"Scraping for user {user_id} with frequency {config.update_frequency} minutes")
+            logger.info(f"MONITORING CYCLE: Starting scrape for user {user_id} (frequency: {config.update_frequency} minutes)")
             
             # Debug: Log the URL being used
             search_url = config.get_base_url()
             logger.info(f"Generated search URL for user {user_id}: {search_url}")
             
             try:
-                await scraper.scrape_listings(config, str(chat_id))
+                results = await scraper.scrape_listings(config, str(chat_id))
+                if results is None or len(results) == 0:
+                    logger.info(f"No new listings found for user {user_id} this cycle")
+                else:
+                    logger.info(f"Found {len(results)} new listings for user {user_id}")
             except Exception as e:
                 logger.error(f"Error during scraping for user {user_id}: {e}")
-                # Send error notification to user
-                try:
-                    from telegram import Bot
-                    bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-                    await bot.send_message(
-                        chat_id=chat_id, 
-                        text=f"⚠️ Monitoring error: {str(e)}\n\nWill retry in {config.update_frequency} minutes."
-                    )
-                except Exception as send_error:
-                    logger.error(f"Failed to send error message to user {user_id}: {send_error}")
+                
+                # For rate limit errors, don't notify user - just log and continue
+                if "403" in str(e) or "rate limit" in str(e).lower():
+                    logger.warning(f"Rate limit encountered for user {user_id} - will retry next cycle with longer delays")
+                else:
+                    # For other errors, notify user
+                    try:
+                        from telegram import Bot
+                        bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+                        await bot.send_message(
+                            chat_id=chat_id, 
+                            text=f"⚠️ Monitoring error: {str(e)}\n\nWill retry in {config.update_frequency} minutes."
+                        )
+                    except Exception as send_error:
+                        logger.error(f"Failed to send error message to user {user_id}: {send_error}")
                 # Continue monitoring even if one scrape fails
             
             # Wait for the user's configured frequency
@@ -600,16 +647,46 @@ async def start_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     test_url = config.get_base_url()
     logger.info(f"DEBUG: Generated URL for user {user_id}: {test_url}")
     
-    # Start monitoring task
-    task = asyncio.create_task(user_monitoring_task(user_id, chat_id))
-    monitoring_tasks[user_id] = task
+    # Start monitoring task with error handling
+    try:
+        task = asyncio.create_task(user_monitoring_task(user_id, chat_id))
+        monitoring_tasks[user_id] = task
+        
+        # Add callback to log if task fails
+        def task_done_callback(task):
+            if task.exception():
+                logger.error(f"Monitoring task for user {user_id} failed: {task.exception()}")
+            else:
+                logger.info(f"Monitoring task for user {user_id} completed normally")
+        
+        task.add_done_callback(task_done_callback)
+        
+        stats_manager.record_user_activity(user_id, 'search_start')
+        active_users = len([task for task in monitoring_tasks.values() if not task.done()])
+        logger.info(f"MULTI-USER: User {user_id} started monitoring (Active monitoring tasks: {active_users})")
+        logger.info(f"DEBUG: Monitoring task created for user {user_id}, task ID: {id(task)}")
+        
+        # Give the task a moment to start
+        await asyncio.sleep(0.1)
+        
+        if task.done():
+            logger.error(f"ERROR: Monitoring task for user {user_id} failed immediately!")
+            if task.exception():
+                raise task.exception()
+        else:
+            logger.info(f"SUCCESS: Monitoring task for user {user_id} is running properly")
+            
+    except Exception as e:
+        logger.error(f"Failed to start monitoring for user {user_id}: {e}")
+        # Remove failed task from monitoring_tasks
+        if user_id in monitoring_tasks:
+            del monitoring_tasks[user_id]
+        raise
     
-    await query.message.edit_text(f"🚀 Monitoring started! You'll receive notifications when new listings match your criteria.\n\n🔍 Search URL: {test_url}")
-    
-    # Show main menu
+    # Show success message with menu
     reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
     await query.message.edit_text(
-        "Welcome to Idealista Monitor Bot! Please choose an option:",
+        f"🚀 Monitoring started! You'll receive notifications when new listings match your criteria.\n\n🔍 Search URL: {test_url}\n\nNext check in {config.update_frequency} minutes.",
         reply_markup=reply_markup
     )
     return CHOOSING
@@ -652,7 +729,7 @@ async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Reset to default configuration
     user_configs[user_id] = SearchConfig()
-    save_configs()
+    await save_configs()
     
     logger.info(f"Settings reset to defaults for user {user_id}")
     
@@ -663,6 +740,161 @@ async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.message.edit_text(
         "Welcome to Idealista Monitor Bot! Please choose an option:",
         reply_markup=reply_markup
+    )
+    return CHOOSING
+
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show bot usage statistics"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Get statistics
+    stats_summary = stats_manager.get_user_summary()
+    active_users = len([task for task in monitoring_tasks.values() if not task.done()])
+    
+    # Get rate limiting info
+    from scraper import global_rate_limiter
+    recent_errors = global_rate_limiter.recent_errors
+    last_error_time = global_rate_limiter.last_error_time
+    current_delay = global_rate_limiter.min_delay_seconds
+    
+    rate_status = "🟢 Normal" if recent_errors == 0 else f"🟡 Elevated ({recent_errors} recent errors)"
+    
+    message = f"""{stats_summary}
+🔄 Currently Active Users: {active_users}
+
+🚦 **Rate Limiting Status**: {rate_status}
+⏱️ Current Delay: {current_delay}s between requests
+📊 Recent Errors: {recent_errors}
+
+💡 This bot uses adaptive rate limiting to avoid being blocked by Idealista!"""
+    
+    # Show stats with back button
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data='back')]
+    ])
+    
+    await query.message.edit_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return CHOOSING
+
+async def check_monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Check detailed monitoring status for the user"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # Check if user has configuration
+    if user_id not in user_configs:
+        message = "❌ No configuration found. Please set up your search preferences first."
+    else:
+        config = user_configs[user_id]
+        
+        # Check monitoring status
+        is_monitoring = user_id in monitoring_tasks and not monitoring_tasks[user_id].done()
+        
+        if is_monitoring:
+            task = monitoring_tasks[user_id]
+            status = "🟢 Active"
+            next_check = f"Next check in ≤{config.update_frequency} minutes"
+        else:
+            status = "🔴 Not Running"
+            next_check = "Click 'Start searching' to begin monitoring"
+        
+        # Get rate limiting info
+        from scraper import global_rate_limiter
+        rate_errors = global_rate_limiter.recent_errors
+        rate_status = "🟢 Normal" if rate_errors == 0 else f"🟡 {rate_errors} recent errors"
+        
+        # Generate current search URL
+        search_url = config.get_base_url()
+        
+        message = f"""🔍 **Monitoring Status for User {user_id}**
+
+🔄 **Status**: {status}
+⏰ **Next Check**: {next_check}
+🚦 **Rate Limiting**: {rate_status}
+
+⚙️ **Current Settings**:
+💰 Max Price: {config.max_price}€
+🛏️ Rooms: {config.min_rooms}-{config.max_rooms}
+📐 Size: {config.min_size}-{config.max_size}m²
+🏢 City: {config.city}
+🔄 Frequency: {config.update_frequency} minutes
+
+🔗 **Search URL**: {search_url[:100]}...
+
+📊 **Debug Info**:
+Total monitoring tasks: {len(monitoring_tasks)}
+Active tasks: {len([t for t in monitoring_tasks.values() if not t.done()])}"""
+    
+    # Show status with back button and test option
+    buttons = [[InlineKeyboardButton("🔙 Back to Menu", callback_data='back')]]
+    if user_id in user_configs:
+        buttons.insert(0, [InlineKeyboardButton("🧪 Test Search Now", callback_data='test_search')])
+    reply_markup = InlineKeyboardMarkup(buttons)
+    
+    await query.message.edit_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return CHOOSING
+
+async def test_search_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Test search functionality immediately for debugging"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    if user_id not in user_configs:
+        await query.message.edit_text("❌ No configuration found. Please set up your search preferences first.")
+        return CHOOSING
+    
+    config = user_configs[user_id]
+    
+    await query.message.edit_text("🧪 **Test Search Started**\n\nSearching for listings now... This may take 1-2 minutes due to rate limiting.")
+    
+    try:
+        # Initialize scraper and run test search
+        scraper = IdealistaScraper()
+        await scraper.initialize()
+        
+        logger.info(f"TEST SEARCH: Manual test search initiated by user {user_id}")
+        
+        results = await scraper.scrape_listings(config, str(chat_id))
+        
+        if results is None:
+            message = "❌ **Test Failed**: Could not fetch data from Idealista (rate limiting or network error)"
+        elif len(results) == 0:
+            message = "✅ **Test Successful**: No new listings found matching your criteria (this is normal if you've seen all current listings)"
+        else:
+            message = f"✅ **Test Successful**: Found {len(results)} new listings! Check your chat for notifications."
+            
+        # Add technical details
+        search_url = config.get_base_url()
+        message += f"\n\n🔗 **Search URL**: {search_url[:100]}...\n\n💡 **Note**: If monitoring is active, this same search runs automatically every {config.update_frequency} minutes."
+        
+    except Exception as e:
+        logger.error(f"TEST SEARCH ERROR for user {user_id}: {e}")
+        message = f"❌ **Test Failed**: {str(e)}\n\nThis helps debug the issue. Check with the bot administrator."
+    
+    # Show result with back button
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Status", callback_data='check_status')],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data='back')]
+    ])
+    
+    await query.message.edit_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
     )
     return CHOOSING
 

@@ -37,10 +37,8 @@ jobs:
         pip install pytest pytest-asyncio
     
     - name: Create test environment files
-      env: 
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       run: |
-        echo "TELEGRAM_BOT_TOKEN=${{ env.TELEGRAM_BOT_TOKEN }}" > .env
+        echo "TELEGRAM_BOT_TOKEN=test_token_for_ci" > .env
         echo "{}" > user_configs.json
         echo "{}" > seen_listings.json
     
