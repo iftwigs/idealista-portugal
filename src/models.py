@@ -93,16 +93,18 @@ class SearchConfig:
             # For 3 or fewer rooms, list them all individually
             params.append(",".join(room_types))
         else:
-            # For more than 3 rooms, list first 3 individually, then compress the rest
-            individual_rooms = [f"t{i}" for i in room_numbers[:3]]
-            remaining_rooms = room_numbers[3:]
-            
-            if len(remaining_rooms) == 1:
-                # Just one more room, add it individually
-                individual_rooms.append(f"t{remaining_rooms[0]}")
-                params.append(",".join(individual_rooms))
+            # For more than 3 rooms, use specific Idealista formatting
+            # Always compress the last two into a range when we have 4+ rooms
+            if len(room_numbers) == 4:
+                # Special case: t2,t3,t4-t5 format
+                individual_rooms = [f"t{i}" for i in room_numbers[:2]]  # First 2
+                range_part = f"t{room_numbers[2]}-t{room_numbers[3]}"   # Last 2 as range
+                all_parts = individual_rooms + [range_part]
+                params.append(",".join(all_parts))
             else:
-                # Multiple remaining rooms, compress them
+                # For 5+ rooms, list first 2 individually, then compress the rest
+                individual_rooms = [f"t{i}" for i in room_numbers[:2]]
+                remaining_rooms = room_numbers[2:]
                 range_part = f"t{remaining_rooms[0]}-t{remaining_rooms[-1]}"
                 all_parts = individual_rooms + [range_part]
                 params.append(",".join(all_parts))
