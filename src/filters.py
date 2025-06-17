@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 from models import SearchConfig, FurnitureType, PropertyState
 
 # Conversation states
-CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(11)
+CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, SETTING_PAGES, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(12)
 
 
 
@@ -29,6 +29,32 @@ async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=reply_markup
     )
     return SETTING_ROOMS
+
+
+async def set_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle pagination setting"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("1 page (safest, ~30 listings)", callback_data='pages_1')],
+        [InlineKeyboardButton("2 pages (~60 listings)", callback_data='pages_2')],
+        [InlineKeyboardButton("3 pages (~90 listings) ⭐", callback_data='pages_3')],
+        [InlineKeyboardButton("4 pages (~120 listings)", callback_data='pages_4')],
+        [InlineKeyboardButton("5 pages (~150 listings, higher risk)", callback_data='pages_5')],
+        [InlineKeyboardButton("Back", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.message.edit_text(
+        "🔍 **Pagination Settings**\n\n"
+        "Select how many pages to scrape per search:\n\n"
+        "⚠️ **Important**: Higher values = more listings but increased risk of IP blocking!\n\n"
+        "🛡️ The bot uses adaptive rate limiting and random delays to minimize detection risk.",
+        reply_markup=reply_markup
+    )
+    
+    return SETTING_PAGES
 
 async def set_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle size setting"""
@@ -112,26 +138,26 @@ async def set_furniture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     keyboard = []
     
     # Furnished
-    is_furnished_selected = FurnitureType.FURNISHED in config.furniture_types
-    furnished_text = "✅ Furnished" if is_furnished_selected else "☐ Furnished"
+    is_furnished_selected = config.furniture_type == FurnitureType.FURNISHED
+    furnished_text = "🔘 Furnished" if is_furnished_selected else "⚪ Furnished"
     keyboard.append([InlineKeyboardButton(furnished_text, callback_data='furniture_toggle_furnished')])
     
     # Kitchen Furniture Only
-    is_kitchen_selected = FurnitureType.KITCHEN_FURNITURE in config.furniture_types
-    kitchen_text = "✅ Kitchen Furniture Only" if is_kitchen_selected else "☐ Kitchen Furniture Only"
+    is_kitchen_selected = config.furniture_type == FurnitureType.KITCHEN_FURNITURE
+    kitchen_text = "🔘 Kitchen Furniture Only" if is_kitchen_selected else "⚪ Kitchen Furniture Only"
     keyboard.append([InlineKeyboardButton(kitchen_text, callback_data='furniture_toggle_kitchen')])
     
-    # Unfurnished
-    is_unfurnished_selected = FurnitureType.UNFURNISHED in config.furniture_types
-    unfurnished_text = "✅ Unfurnished" if is_unfurnished_selected else "☐ Unfurnished"
-    keyboard.append([InlineKeyboardButton(unfurnished_text, callback_data='furniture_toggle_unfurnished')])
+    # Indifferent
+    is_indifferent_selected = config.furniture_type == FurnitureType.INDIFFERENT
+    indifferent_text = "🔘 Indifferent" if is_indifferent_selected else "⚪ Indifferent"
+    keyboard.append([InlineKeyboardButton(indifferent_text, callback_data='furniture_toggle_indifferent')])
     
     keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.message.edit_text(
-        "Select furniture preferences (you can select multiple):",
+        "Select furniture preference (single choice):",
         reply_markup=reply_markup
     )
     return SETTING_FURNITURE

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # Configuration file locking for multi-user safety
 config_lock = asyncio.Lock()
-from filters import set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency, set_polygon
+from filters import set_rooms, set_size, set_price, set_furniture, set_state, set_city, set_frequency, set_pagination, set_polygon
 from scraper import IdealistaScraper
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(11)
+CHOOSING, SETTING_ROOMS, SETTING_SIZE, SETTING_PRICE, SETTING_FURNITURE, SETTING_STATE, SETTING_CITY, SETTING_POLYGON, SETTING_FREQUENCY, SETTING_PAGES, WAITING_FOR_PRICE, WAITING_FOR_POLYGON_URL = range(12)
 
 # Store user configurations and monitoring tasks
 user_configs: Dict[int, SearchConfig] = {}
@@ -43,6 +43,7 @@ def get_main_menu_keyboard(user_id: int) -> list:
         [InlineKeyboardButton("Set city", callback_data='city')],
         [InlineKeyboardButton("Set a custom area (polygon)", callback_data='polygon')],
         [InlineKeyboardButton("Set update frequency", callback_data='frequency')],
+        [InlineKeyboardButton("📄 Pagination settings", callback_data='pagination')],
         [InlineKeyboardButton("Show current settings", callback_data='show')],
         [InlineKeyboardButton("📊 Bot Statistics", callback_data='stats')],
         [InlineKeyboardButton("🔍 Check Monitoring Status", callback_data='check_status')],
@@ -72,19 +73,44 @@ def load_configs():
                     config['property_states'] = [PropertyState(state) for state in config['property_states']]
                 
                 # Handle backwards compatibility for furniture setting
-                if 'has_furniture' in config and 'furniture_types' not in config:
-                    config['furniture_types'] = [FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.UNFURNISHED]
+                if 'has_furniture' in config and 'furniture_type' not in config:
+                    config['furniture_type'] = FurnitureType.FURNISHED if config['has_furniture'] else FurnitureType.INDIFFERENT
                     config.pop('has_furniture', None)  # Remove old field
-                elif 'furniture_type' in config and 'furniture_types' not in config:
-                    config['furniture_types'] = [FurnitureType(config['furniture_type'])]
-                    config.pop('furniture_type', None)  # Remove old field
-                elif 'furniture_types' in config:
-                    config['furniture_types'] = [FurnitureType(ft) for ft in config['furniture_types']]
+                elif 'furniture_types' in config and 'furniture_type' not in config:
+                    # Convert from old list format to single value (take first item)
+                    if config['furniture_types']:
+                        old_value = config['furniture_types'][0]
+                        # Map old enum values to new ones
+                        if old_value == 'mobilado':
+                            config['furniture_type'] = FurnitureType.FURNISHED
+                        elif old_value == 'mobilado-cozinha':
+                            config['furniture_type'] = FurnitureType.KITCHEN_FURNITURE
+                        elif old_value == 'sem-mobilia':
+                            config['furniture_type'] = FurnitureType.INDIFFERENT  # Unfurnished becomes "indifferent" 
+                        else:
+                            config['furniture_type'] = FurnitureType.INDIFFERENT
+                    else:
+                        config['furniture_type'] = FurnitureType.INDIFFERENT
+                    config.pop('furniture_types', None)  # Remove old field
+                elif 'furniture_type' in config:
+                    # Handle old furniture_type values too
+                    old_value = config['furniture_type']
+                    if old_value == 'mobilado':
+                        config['furniture_type'] = FurnitureType.FURNISHED
+                    elif old_value == 'mobilado-cozinha':
+                        config['furniture_type'] = FurnitureType.KITCHEN_FURNITURE
+                    elif old_value == 'sem-mobilia':
+                        config['furniture_type'] = FurnitureType.INDIFFERENT
+                    else:
+                        try:
+                            config['furniture_type'] = FurnitureType(config['furniture_type'])
+                        except ValueError:
+                            config['furniture_type'] = FurnitureType.INDIFFERENT
                 
                 # Remove any unknown fields that might cause errors
                 valid_fields = {
                     'min_rooms', 'max_rooms', 'min_size', 'max_size', 'max_price',
-                    'furniture_types', 'property_states', 'city', 'custom_polygon', 'update_frequency'
+                    'furniture_type', 'property_states', 'city', 'custom_polygon', 'update_frequency'
                 }
                 config = {k: v for k, v in config.items() if k in valid_fields}
                 
@@ -106,8 +132,8 @@ async def save_configs():
                 config_dict = config.__dict__.copy()
                 # Convert PropertyState list to string values
                 config_dict['property_states'] = [state.value for state in config_dict['property_states']]
-                # Convert FurnitureType list to string values
-                config_dict['furniture_types'] = [ft.value for ft in config_dict['furniture_types']]
+                # Convert FurnitureType to string value
+                config_dict['furniture_type'] = config_dict['furniture_type'].value
                 configs[str(user_id)] = config_dict
             
             with open('user_configs.json', 'w') as f:
@@ -178,10 +204,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Minimum rooms: {config.min_rooms}+\n"
             f"Size: {config.min_size}-{config.max_size}m²\n"
             f"Max Price: {config.max_price}€\n"
-            f"Furniture: {', '.join([ft.name.replace('_', ' ').title() for ft in config.furniture_types])}\n"
+            f"Furniture: {config.furniture_type.name.replace('_', ' ').title()}\n"
             f"State: {', '.join([state.name.replace('_', ' ').title() for state in config.property_states])}\n"
             f"{'Custom Area: Set' if config.custom_polygon else f'City: {config.city}'}\n"
-            f"Update Frequency: {config.update_frequency} minutes"
+            f"Update Frequency: {config.update_frequency} minutes\n"
+            f"Pages per search: {config.max_pages} (~{config.max_pages * 30} listings)"
         )
         return CHOOSING
     
@@ -215,6 +242,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await set_city(update, context)
     elif query.data == 'frequency':
         return await set_frequency(update, context)
+    elif query.data == 'pagination':
+        return await set_pagination(update, context)
     elif query.data == 'polygon':
         return await set_polygon(update, context)
     elif query.data == 'start_monitoring':
@@ -297,53 +326,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         config = user_configs[user_id]
         
-        # Toggle the furniture type in the list
+        # Set the furniture type (single choice now)
         if furniture_type == 'furnished':
             target_furniture = FurnitureType.FURNISHED
         elif furniture_type == 'kitchen':
             target_furniture = FurnitureType.KITCHEN_FURNITURE
-        elif furniture_type == 'unfurnished':
-            target_furniture = FurnitureType.UNFURNISHED
+        elif furniture_type == 'indifferent':
+            target_furniture = FurnitureType.INDIFFERENT
         else:
             return SETTING_FURNITURE
             
-        if target_furniture in config.furniture_types:
-            # Remove if already selected (but keep at least one)
-            if len(config.furniture_types) > 1:
-                config.furniture_types.remove(target_furniture)
-        else:
-            # Add if not selected
-            config.furniture_types.append(target_furniture)
+        # Set the single furniture type
+        config.furniture_type = target_furniture
             
         await save_configs()
         
         # Debug: Log the current furniture selection
-        logger.info(f"Furniture types updated for user {user_id}: {[ft.name for ft in config.furniture_types]}")
+        logger.info(f"Furniture type updated for user {user_id}: {config.furniture_type.name}")
         
-        # Manually refresh the keyboard to show updated checkboxes
+        # Manually refresh the keyboard to show updated radio buttons (single choice)
         keyboard = []
         
         # Furnished
-        is_furnished_selected = FurnitureType.FURNISHED in config.furniture_types
-        furnished_text = "✅ Furnished" if is_furnished_selected else "☐ Furnished"
+        is_furnished_selected = config.furniture_type == FurnitureType.FURNISHED
+        furnished_text = "🔘 Furnished" if is_furnished_selected else "⚪ Furnished"
         keyboard.append([InlineKeyboardButton(furnished_text, callback_data='furniture_toggle_furnished')])
         
         # Kitchen Furniture Only
-        is_kitchen_selected = FurnitureType.KITCHEN_FURNITURE in config.furniture_types
-        kitchen_text = "✅ Kitchen Furniture Only" if is_kitchen_selected else "☐ Kitchen Furniture Only"
+        is_kitchen_selected = config.furniture_type == FurnitureType.KITCHEN_FURNITURE
+        kitchen_text = "🔘 Kitchen Furniture Only" if is_kitchen_selected else "⚪ Kitchen Furniture Only"
         keyboard.append([InlineKeyboardButton(kitchen_text, callback_data='furniture_toggle_kitchen')])
         
-        # Unfurnished
-        is_unfurnished_selected = FurnitureType.UNFURNISHED in config.furniture_types
-        unfurnished_text = "✅ Unfurnished" if is_unfurnished_selected else "☐ Unfurnished"
-        keyboard.append([InlineKeyboardButton(unfurnished_text, callback_data='furniture_toggle_unfurnished')])
+        # Indifferent
+        is_indifferent_selected = config.furniture_type == FurnitureType.INDIFFERENT
+        indifferent_text = "🔘 Indifferent" if is_indifferent_selected else "⚪ Indifferent"
+        keyboard.append([InlineKeyboardButton(indifferent_text, callback_data='furniture_toggle_indifferent')])
         
         keyboard.append([InlineKeyboardButton("Back", callback_data='back')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "Select furniture preferences (you can select multiple):",
+            "Select furniture preference (single choice):",
             reply_markup=reply_markup
         )
         return SETTING_FURNITURE
@@ -436,6 +460,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         config.update_frequency = int(minutes)
         await save_configs()
         await query.message.edit_text("Update frequency updated!")
+        
+        # Show main menu
+        reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
+        await query.message.edit_text(
+            "Welcome to Idealista Monitor Bot! Please choose an option:",
+            reply_markup=reply_markup
+        )
+        return CHOOSING
+    
+    elif query.data.startswith('pages_'):
+        _, max_pages = query.data.split('_')
+        user_id = update.effective_user.id
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+        config = user_configs[user_id]
+        config.max_pages = int(max_pages)
+        await save_configs()
+        
+        # Show confirmation with appropriate warning
+        if int(max_pages) >= 4:
+            warning = "\n⚠️ High page count increases IP blocking risk!"
+        else:
+            warning = ""
+        
+        await query.message.edit_text(f"Pagination set to {max_pages} pages (~{int(max_pages) * 30} listings)!{warning}")
         
         # Show main menu
         reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard(update.effective_user.id))
@@ -587,7 +636,7 @@ async def user_monitoring_task(user_id: int, chat_id: int):
             logger.info(f"Generated search URL for user {user_id}: {search_url}")
             
             try:
-                results = await scraper.scrape_listings(config, str(chat_id))
+                results = await scraper.scrape_listings(config, str(chat_id), max_pages=config.max_pages)
                 if results is None or len(results) == 0:
                     logger.info(f"No new listings found for user {user_id} this cycle")
                 else:
@@ -868,7 +917,7 @@ async def test_search_now(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         logger.info(f"TEST SEARCH: Manual test search initiated by user {user_id}")
         
-        results = await scraper.scrape_listings(config, str(chat_id))
+        results = await scraper.scrape_listings(config, str(chat_id), max_pages=3, force_all_pages=True)
         
         if results is None:
             message = "❌ **Test Failed**: Could not fetch data from Idealista (rate limiting or network error)"
@@ -925,6 +974,7 @@ def main():
             SETTING_STATE: [CallbackQueryHandler(button_handler)],
             SETTING_CITY: [CallbackQueryHandler(button_handler)],
             SETTING_FREQUENCY: [CallbackQueryHandler(button_handler)],
+            SETTING_PAGES: [CallbackQueryHandler(button_handler)],
             WAITING_FOR_PRICE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_price_input),
                 CallbackQueryHandler(button_handler)

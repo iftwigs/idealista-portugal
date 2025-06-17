@@ -8,9 +8,9 @@ class PropertyState(Enum):
     NEW = "com-novo"
 
 class FurnitureType(Enum):
-    FURNISHED = "mobilado"
-    KITCHEN_FURNITURE = "mobilado-cozinha"
-    UNFURNISHED = "sem-mobilia"
+    INDIFFERENT = "indifferent"  # No URL parameter - show all apartments
+    FURNISHED = "equipamento_mobilado"  # Fully furnished
+    KITCHEN_FURNITURE = "equipamento_so-cozinha-equipada"  # Kitchen only
 
 class SizeRange(Enum):
     """Size ranges in square meters (minimum size)"""
@@ -40,14 +40,12 @@ class SearchConfig:
     min_size: int = 30
     max_size: int = 200
     max_price: int = 2000
-    furniture_types: List[FurnitureType] = None
+    furniture_type: FurnitureType = FurnitureType.INDIFFERENT
     property_states: List[PropertyState] = None
     
     def __post_init__(self):
         if self.property_states is None:
             self.property_states = [PropertyState.GOOD]
-        if self.furniture_types is None:
-            self.furniture_types = [FurnitureType.FURNISHED]
     
     # Location
     city: str = "lisboa"
@@ -55,6 +53,9 @@ class SearchConfig:
     
     # Update frequency in minutes
     update_frequency: int = 5
+    
+    # Pagination settings
+    max_pages: int = 3  # Maximum pages to scrape (1-5, higher values increase blocking risk)
     
     # Rate limiting
     requests_per_minute: int = 2
@@ -86,39 +87,37 @@ class SearchConfig:
         else:
             room_types = [f"t{i}" for i in range(self.min_rooms, min(self.max_rooms + 1, 6))]
         
-        # Add room types in Idealista format: t1,t2,t3,t4-t5 style
+        # Add room types following Idealista rules: t1, t2, t3, t4-t5 as separate parameters
         room_numbers = [int(rt[1:]) for rt in room_types]
         
-        if len(room_numbers) <= 3:
-            # For 3 or fewer rooms, list them all individually
-            params.append(",".join(room_types))
-        else:
-            # For more than 3 rooms, use specific Idealista formatting
-            # Always compress the last two into a range when we have 4+ rooms
-            if len(room_numbers) == 4:
-                # Special case: t2,t3,t4-t5 format
-                individual_rooms = [f"t{i}" for i in room_numbers[:2]]  # First 2
-                range_part = f"t{room_numbers[2]}-t{room_numbers[3]}"   # Last 2 as range
-                all_parts = individual_rooms + [range_part]
-                params.append(",".join(all_parts))
-            else:
-                # For 5+ rooms, list first 2 individually, then compress the rest
-                individual_rooms = [f"t{i}" for i in room_numbers[:2]]
-                remaining_rooms = room_numbers[2:]
-                range_part = f"t{remaining_rooms[0]}-t{remaining_rooms[-1]}"
-                all_parts = individual_rooms + [range_part]
-                params.append(",".join(all_parts))
+        # Always add individual room parameters first (t0, t1, t2, t3)
+        individual_rooms = []
+        for room_num in room_numbers:
+            if room_num <= 3:
+                individual_rooms.append(f"t{room_num}")
         
-        # 4. Furniture filter (only if specified and not UNFURNISHED only)
-        if self.furniture_types and FurnitureType.UNFURNISHED not in self.furniture_types:
-            furniture_params = []
-            if FurnitureType.FURNISHED in self.furniture_types:
-                furniture_params.append("equipamento_mobilado")
-            if FurnitureType.KITCHEN_FURNITURE in self.furniture_types:
-                furniture_params.append("equipamento_so-cozinha-equipada")
-            
-            # Add furniture parameters
-            params.extend(furniture_params)
+        # Add individual room parameters
+        if individual_rooms:
+            params.extend(individual_rooms)
+        
+        # Add t4-t5 range as a separate parameter if needed
+        has_t4_or_t5 = any(room_num >= 4 for room_num in room_numbers)
+        if has_t4_or_t5:
+            # Find the range of rooms >= 4
+            high_rooms = [room_num for room_num in room_numbers if room_num >= 4]
+            if high_rooms:
+                min_high = min(high_rooms)
+                max_high = min(max(high_rooms), 5)  # Cap at t5
+                if min_high == max_high:
+                    # Single room (e.g., just t4)
+                    params.append(f"t{min_high}")
+                else:
+                    # Range (e.g., t4-t5)
+                    params.append(f"t{min_high}-t{max_high}")
+        
+        # 4. Furniture filter (single choice)
+        if self.furniture_type != FurnitureType.INDIFFERENT:
+            params.append(self.furniture_type.value)
         
         # 5. Property states (only if any are specified)
         if self.property_states:
@@ -142,8 +141,14 @@ class SearchConfig:
     def get_base_url(self) -> str:
         """Get the base URL for Idealista search"""
         if self.custom_polygon:
-            return f"https://www.idealista.pt/areas/arrendar-casas/com-{self.to_url_params()}/?shape={self.custom_polygon}"
+            # For custom polygons, use the path-based filter format with /areas/ endpoint
+            # Format: https://www.idealista.pt/areas/arrendar-casas/com-FILTERS/?shape=POLYGON
+            import urllib.parse
+            params = self.to_url_params()
+            # URL-encode the polygon parameter to ensure special characters are properly encoded
+            encoded_polygon = urllib.parse.quote(self.custom_polygon, safe='')
+            return f"https://www.idealista.pt/areas/arrendar-casas/com-{params}/?shape={encoded_polygon}"
         else:
-            # Build URL in the exact Idealista format
+            # Build URL in the exact Idealista format for city-based searches
             params = self.to_url_params()
             return f"https://www.idealista.pt/arrendar-casas/{self.city}/com-{params}/" 

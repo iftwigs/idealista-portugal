@@ -27,12 +27,13 @@ class AdaptiveRateLimiter:
     def __init__(self):
         self.user_last_request: Dict[str, float] = {}
         self.global_last_request = 0
-        self.min_delay_seconds = 60  # Start with 60 seconds between requests per user
-        self.global_min_delay = 30   # Minimum 30 seconds between ANY requests
-        self.backoff_multiplier = 2  # Multiply delay on 403 errors
-        self.max_delay = 300         # Maximum 5 minutes delay
+        self.min_delay_seconds = 90  # Increased to 90 seconds between requests per user
+        self.global_min_delay = 45   # Increased to 45 seconds between ANY requests  
+        self.backoff_multiplier = 2.5  # Slightly higher multiplier for pagination
+        self.max_delay = 600         # Increased to 10 minutes maximum delay
         self.recent_errors = 0       # Track recent 403 errors
         self.last_error_time = 0     # When last error occurred
+        self.pagination_delay_multiplier = 1.5  # Extra delay for pagination requests
     
     async def wait_if_needed(self, user_id: str) -> None:
         """Wait if needed with adaptive rate limiting"""
@@ -178,169 +179,225 @@ class IdealistaScraper:
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
     
-    async def scrape_listings(self, config: SearchConfig, chat_id: str):
-        """Scrape listings based on configuration"""
+    async def scrape_listings(self, config: SearchConfig, chat_id: str, max_pages: int = 3, force_all_pages: bool = False):
+        """Scrape listings based on configuration with pagination support
+        
+        Args:
+            config: Search configuration
+            chat_id: User's chat ID
+            max_pages: Maximum number of pages to scrape (default 3 for safety)
+            force_all_pages: If True, scrape all pages even if no new listings found
+        """
         # Ensure chat_id is a string
         chat_id = str(chat_id)
         if chat_id not in self.seen_listings:
             self.seen_listings[chat_id] = set()
         
-        url = config.get_base_url()
+        all_listings = []
+        current_page = 1
+        consecutive_empty_pages = 0
+        max_consecutive_empty = 2  # Stop if 2 consecutive pages have no new listings
         
         async with aiohttp.ClientSession() as session:
-            html = await fetch_page(session, url, user_id=chat_id)
-            if not html:
-                logger.warning(f"Failed to fetch page for user {chat_id} - will retry next cycle")
-                return []
-            
-            soup = BeautifulSoup(html, "html.parser")
-            listings = []
-            
-            for listing in soup.find_all("article", class_="item" if "item" in html else "listing-item"):
-                try:
-                    title = listing.find("a", class_="item-link").get_text(strip=True)
-                    link = "https://www.idealista.pt" + listing.find("a", class_="item-link")["href"]
-                    
-                    if link in self.seen_listings[chat_id]:
-                        print(f"DEBUG: Skipping {link} because it is already in seen_listings for {chat_id}")
-                        continue
-                    
-                    description = listing.find("div", class_="description").get_text(strip=True) if listing.find("div", class_="description") else "No description"
-                    
-                    price_element = listing.find("span", class_="item-price")
-                    price_text = price_element.get_text(strip=True).split("€")[0].strip() if price_element else "0"
-                    price = int(price_text.replace(".", ""))  # Convert to integer
-                    
-                    details_elements = listing.find_all("span", class_="item-detail")
-                    rooms_text = details_elements[0].get_text(strip=True) if len(details_elements) > 0 else "0"
-                    
-                    # Handle room format like "T2", "T4", etc.
+            while current_page <= max_pages:
+                # Build URL for current page
+                base_url = config.get_base_url()
+                if current_page == 1:
+                    url = base_url
+                else:
+                    # Add pagination parameter  
+                    separator = "&" if "?" in base_url else "?"
+                    url = f"{base_url}{separator}pagina={current_page}"
+                
+                logger.info(f"🔍 PAGINATION: Scraping page {current_page}/{max_pages} for user {chat_id}")
+                logger.info(f"🔗 URL: {url}")
+                
+                # Fetch page with enhanced delays for pagination
+                if current_page > 1:
+                    # Extra delay between pages to appear more human-like
+                    page_delay = random.uniform(5, 12)  # 5-12 seconds between pages
+                    logger.info(f"Waiting {page_delay:.1f}s before scraping page {current_page}")
+                    await asyncio.sleep(page_delay)
+                
+                html = await fetch_page(session, url, user_id=chat_id)
+                if not html:
+                    logger.warning(f"Failed to fetch page {current_page} for user {chat_id} - stopping pagination")
+                    break
+                
+                soup = BeautifulSoup(html, "html.parser")
+                page_listings = []
+                
+                # Check if this page has any listings
+                listing_elements = soup.find_all("article", class_="item" if "item" in html else "listing-item")
+                if not listing_elements:
+                    logger.info(f"No listings found on page {current_page} for user {chat_id}")
+                    consecutive_empty_pages += 1
+                    if consecutive_empty_pages >= max_consecutive_empty:
+                        logger.info(f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages")
+                        break
+                    current_page += 1
+                    continue
+                
+                # Reset consecutive empty pages counter
+                consecutive_empty_pages = 0
+                
+                # Process listings on this page
+                new_listings_this_page = 0
+                for listing in listing_elements:
                     try:
-                        if rooms_text.startswith('T'):
-                            rooms = int(rooms_text[1:])  # Extract number after 'T'
+                        title = listing.find("a", class_="item-link").get_text(strip=True)
+                        link = "https://www.idealista.pt" + listing.find("a", class_="item-link")["href"]
+                        
+                        if link in self.seen_listings[chat_id]:
+                            print(f"DEBUG: Skipping {link} because it is already in seen_listings for {chat_id}")
+                            continue
+                        
+                        description = listing.find("div", class_="description").get_text(strip=True) if listing.find("div", class_="description") else "No description"
+                        
+                        price_element = listing.find("span", class_="item-price")
+                        price_text = price_element.get_text(strip=True).split("€")[0].strip() if price_element else "0"
+                        price = int(price_text.replace(".", ""))  # Convert to integer
+                        
+                        details_elements = listing.find_all("span", class_="item-detail")
+                        rooms_text = details_elements[0].get_text(strip=True) if len(details_elements) > 0 else "0"
+                        
+                        # Handle room format like "T2", "T4", etc.
+                        try:
+                            if rooms_text.startswith('T'):
+                                rooms = int(rooms_text[1:])  # Extract number after 'T'
+                            else:
+                                rooms = int(rooms_text.split()[0]) if rooms_text.split() else 0
+                        except (ValueError, IndexError):
+                            rooms = 0
+                        
+                        size_text = details_elements[1].get_text(strip=True) if len(details_elements) > 1 else "0"
+                        size = int(size_text.split("m²")[0].strip()) if "m²" in size_text else 0
+                        
+                        # Parse furniture information for display purposes only
+                        # (filtering is handled by URL parameters)
+                        furniture_text = ""
+                        for elem in details_elements[3:]:  # Check elements from index 3 onwards
+                            furniture_text += elem.get_text(strip=True) + " "
+                        furniture_text = furniture_text.lower()
+                        
+                        # Simple detection for display
+                        has_furniture = "mobilado" in furniture_text or "furnished" in furniture_text
+                        has_kitchen_furniture = "cozinha" in furniture_text and "equipada" in furniture_text
+                        
+                        # Parse property state for display purposes (filtering is handled via URL parameters)
+                        state_text = details_elements[4].get_text(strip=True) if len(details_elements) > 4 else ""
+                        is_good_state = "Good condition" in state_text or "Bom estado" in state_text
+                        is_new_state = "New" in state_text or "Novo" in state_text
+                        is_remodel_state = "remodel" in state_text.lower() or "reformar" in state_text.lower()
+                        
+                        # Skip if description contains excluded terms
+                        excluded_terms = ["curto prazo", "alquiler temporal", "estancia corta", "short term"]
+                        if any(term.lower() in description.lower() for term in excluded_terms):
+                            print(f"DEBUG: Skipping {link} because description contains excluded terms")
+                            continue
+                        
+                        # Skip if floor is in excluded floors
+                        excluded_floors = ["Entreplanta", "Planta 1ᵃ", "Bajo"]
+                        floor = details_elements[2].get_text(strip=True) if len(details_elements) > 2 else ""
+                        if any(floor_term.lower() in floor.lower() for floor_term in excluded_floors):
+                            print(f"DEBUG: Skipping {link} because floor '{floor}' is in excluded floors")
+                            continue
+                        
+                        # Apply filters
+                        if price > config.max_price:
+                            print(f"DEBUG: Skipping {link} because price {price} > max_price {config.max_price}")
+                            continue
+                        if rooms < config.min_rooms:
+                            print(f"DEBUG: Skipping {link} because rooms {rooms} < min_rooms {config.min_rooms}")
+                            continue
+                        if size < config.min_size or size > config.max_size:
+                            print(f"DEBUG: Skipping {link} because size {size} not in range [{config.min_size}, {config.max_size}]")
+                            continue
+                        # Furniture filtering is handled by URL parameters - no client-side filtering needed
+                        # Property state filtering is also handled via URL parameters
+                        
+                        # LOG: This listing matches all criteria and will be sent
+                        logger.info(f"MATCH FOUND for user {chat_id} (page {current_page}): {title} - {price}€, {rooms} rooms, {size}m², {floor}")
+                        logger.info(f"MATCH DETAILS: URL={link}")
+                        
+                        listing_data = {
+                            "title": title,
+                            "link": link,
+                            "description": description,
+                            "price": f"{price} €",
+                            "rooms": f"{rooms} rooms",
+                            "size": f"{size}m²",
+                            "floor": floor
+                        }
+                        
+                        # Determine furniture status for display
+                        if has_furniture:
+                            furniture_status = "🪑 Furnished"
+                        elif has_kitchen_furniture:
+                            furniture_status = "🍽️ Kitchen furnished"
                         else:
-                            rooms = int(rooms_text.split()[0]) if rooms_text.split() else 0
-                    except (ValueError, IndexError):
-                        rooms = 0
-                    
-                    size_text = details_elements[1].get_text(strip=True) if len(details_elements) > 1 else "0"
-                    size = int(size_text.split("m²")[0].strip()) if "m²" in size_text else 0
-                    
-                    furniture_text = details_elements[3].get_text(strip=True) if len(details_elements) > 3 else ""
-                    has_furniture = "Furnished" in furniture_text or "Mobilado" in furniture_text
-                    has_kitchen_furniture = "Kitchen" in furniture_text or "Cozinha" in furniture_text
-                    
-                    # Parse property state for display purposes (filtering is handled via URL parameters)
-                    state_text = details_elements[4].get_text(strip=True) if len(details_elements) > 4 else ""
-                    is_good_state = "Good condition" in state_text or "Bom estado" in state_text
-                    is_new_state = "New" in state_text or "Novo" in state_text
-                    is_remodel_state = "remodel" in state_text.lower() or "reformar" in state_text.lower()
-                    
-                    # Skip if description contains excluded terms
-                    excluded_terms = ["curto prazo", "alquiler temporal", "estancia corta", "short term"]
-                    if any(term.lower() in description.lower() for term in excluded_terms):
-                        print(f"DEBUG: Skipping {link} because description contains excluded terms")
-                        continue
-                    
-                    # Skip if floor is in excluded floors
-                    excluded_floors = ["Entreplanta", "Planta 1ᵃ", "Bajo"]
-                    floor = details_elements[2].get_text(strip=True) if len(details_elements) > 2 else ""
-                    if any(floor_term.lower() in floor.lower() for floor_term in excluded_floors):
-                        print(f"DEBUG: Skipping {link} because floor '{floor}' is in excluded floors")
-                        continue
-                    
-                    # Apply filters
-                    if price > config.max_price:
-                        print(f"DEBUG: Skipping {link} because price {price} > max_price {config.max_price}")
-                        continue
-                    if rooms < config.min_rooms:
-                        print(f"DEBUG: Skipping {link} because rooms {rooms} < min_rooms {config.min_rooms}")
-                        continue
-                    if size < config.min_size or size > config.max_size:
-                        print(f"DEBUG: Skipping {link} because size {size} not in range [{config.min_size}, {config.max_size}]")
-                        continue
-                    # Apply furniture filter based on selected furniture types
-                    # If UNFURNISHED is the only selection, skip furnished apartments
-                    if (len(config.furniture_types) == 1 and 
-                        FurnitureType.UNFURNISHED in config.furniture_types and 
-                        has_furniture):
-                        print(f"DEBUG: Skipping {link} because unfurnished only required but apartment is furnished")
-                        continue
-                    
-                    # If FURNISHED is selected but apartment is not furnished, skip
-                    if (FurnitureType.FURNISHED in config.furniture_types and 
-                        not has_furniture and 
-                        FurnitureType.UNFURNISHED not in config.furniture_types):
-                        print(f"DEBUG: Skipping {link} because furnished required but not present")
-                        continue
-                    
-                    # Note: KITCHEN_FURNITURE filtering would need more detailed parsing of furniture details
-                    
-                    # Property state filtering is now handled via URL parameters - no need to filter here
-                    
-                    # LOG: This listing matches all criteria and will be sent
-                    logger.info(f"MATCH FOUND for user {chat_id}: {title} - {price}€, {rooms} rooms, {size}m², {floor}")
-                    logger.info(f"MATCH DETAILS: URL={link}")
-                    
-                    listings.append({
-                        "title": title,
-                        "link": link,
-                        "description": description,
-                        "price": f"{price} €",
-                        "rooms": f"{rooms} rooms",
-                        "size": f"{size}m²",
-                        "floor": floor
-                    })
-                    
-                    self.seen_listings[chat_id].add(link)
-                    
-                    # Determine furniture status
-                    if has_furniture:
-                        furniture_status = "🪑 Furnished"
-                    elif has_kitchen_furniture:
-                        furniture_status = "🍽️ Kitchen furnished"
-                    else:
-                        furniture_status = "🏠 Unfurnished"
-                    
-                    # Determine property state based on parsed information
-                    if is_new_state:
-                        state_status = "🆕 New"
-                    elif is_good_state:
-                        state_status = "✨ Good condition"
-                    elif is_remodel_state:
-                        state_status = "🔨 Needs remodeling"
-                    else:
-                        state_status = "❓ State unknown"
-                    
-                    # Send notification
-                    message = f"""🏡 *New Apartment Listing!*\n
+                            furniture_status = "🏠 Unfurnished"
+                        
+                        # Determine property state based on parsed information
+                        if is_new_state:
+                            state_status = "🆕 New"
+                        elif is_good_state:
+                            state_status = "✨ Good condition"
+                        elif is_remodel_state:
+                            state_status = "🔨 Needs remodeling"
+                        else:
+                            state_status = "❓ State unknown"
+                        
+                        # Add furniture and state status to listing data
+                        listing_data["furniture_status"] = furniture_status
+                        listing_data["state_status"] = state_status
+                        
+                        page_listings.append(listing_data)
+                        new_listings_this_page += 1
+                        self.seen_listings[chat_id].add(link)
+                        
+                        # Send notification immediately
+                        message = f"""🏡 *New Apartment Listing!*\n
 📍 {title}\n
 💰 {price} €\n🛏️ {rooms} rooms\n📐 {size}m²\n🏢 {floor}\n{furniture_status}\n{state_status}\n
 🔗 [Click here to view]({link})"""
-                    print(f"DEBUG: About to send telegram message for {link}")
-                    await self.send_telegram_message(chat_id, message)
-                    
-                    # Track listing notification in stats
-                    try:
-                        from user_stats import stats_manager
-                        stats_manager.record_user_activity(chat_id, 'listing_received')
-                    except ImportError:
-                        pass  # Stats module not available
-                    
-                except Exception as e:
-                    logger.error(f"Error parsing listing: {e}")
+                        print(f"DEBUG: About to send telegram message for {link} (page {current_page})")
+                        await self.send_telegram_message(chat_id, message)
+                        
+                        # Track listing notification in stats
+                        try:
+                            from user_stats import stats_manager
+                            stats_manager.record_user_activity(chat_id, 'listing_received')
+                        except ImportError:
+                            pass  # Stats module not available
+                        
+                    except Exception as e:
+                        logger.error(f"Error parsing listing on page {current_page}: {e}")
+                
+                # Add page listings to total
+                all_listings.extend(page_listings)
+                
+                # Log page summary
+                logger.info(f"📊 PAGE {current_page} SUMMARY for user {chat_id}: Processed {len(listing_elements)} listings, found {new_listings_this_page} new matches")
+                
+                # Stop early if no new listings found (unless force_all_pages is True)
+                if new_listings_this_page == 0 and not force_all_pages and current_page >= 2:
+                    logger.info(f"No new listings found on page {current_page}, stopping pagination early (use force_all_pages=True to override)")
+                    break
+                
+                # Move to next page
+                current_page += 1
             
             # Clean up seen listings to prevent memory leaks
             await self.cleanup_seen_listings(chat_id)
             
             await self.save_seen_listings()
             
-            # Log summary of scraping results
-            total_processed = len(soup.find_all("article", class_="item" if "item" in html else "listing-item"))
-            total_matches = len(listings)
-            logger.info(f"SCRAPING SUMMARY for user {chat_id}: Processed {total_processed} listings, found {total_matches} matches")
+            # Log final summary of scraping results
+            total_pages_scraped = current_page - 1 if current_page > max_pages else current_page
+            logger.info(f"PAGINATION SUMMARY for user {chat_id}: Scraped {total_pages_scraped} pages, found {len(all_listings)} total matches")
             
-            return listings
+            return all_listings
 
 async def main():
     """Main function to run the scraper"""
@@ -366,14 +423,39 @@ async def main():
             elif 'property_states' in config_data:
                 config_data['property_states'] = [PropertyState(state) for state in config_data['property_states']]
             
-            if 'has_furniture' in config_data and 'furniture_types' not in config_data:
-                config_data['furniture_types'] = [FurnitureType.FURNISHED if config_data['has_furniture'] else FurnitureType.UNFURNISHED]
+            if 'has_furniture' in config_data and 'furniture_type' not in config_data:
+                config_data['furniture_type'] = FurnitureType.FURNISHED if config_data['has_furniture'] else FurnitureType.INDIFFERENT
                 config_data.pop('has_furniture', None)
-            elif 'furniture_type' in config_data and 'furniture_types' not in config_data:
-                config_data['furniture_types'] = [FurnitureType(config_data['furniture_type'])]
-                config_data.pop('furniture_type', None)
-            elif 'furniture_types' in config_data:
-                config_data['furniture_types'] = [FurnitureType(ft) for ft in config_data['furniture_types']]
+            elif 'furniture_types' in config_data and 'furniture_type' not in config_data:
+                # Convert from old list format to single value (take first item)
+                if config_data['furniture_types']:
+                    old_value = config_data['furniture_types'][0]
+                    # Map old enum values to new ones
+                    if old_value == 'mobilado':
+                        config_data['furniture_type'] = FurnitureType.FURNISHED
+                    elif old_value == 'mobilado-cozinha':
+                        config_data['furniture_type'] = FurnitureType.KITCHEN_FURNITURE
+                    elif old_value == 'sem-mobilia':
+                        config_data['furniture_type'] = FurnitureType.INDIFFERENT
+                    else:
+                        config_data['furniture_type'] = FurnitureType.INDIFFERENT
+                else:
+                    config_data['furniture_type'] = FurnitureType.INDIFFERENT
+                config_data.pop('furniture_types', None)
+            elif 'furniture_type' in config_data:
+                # Handle old furniture_type values too
+                old_value = config_data['furniture_type']
+                if old_value == 'mobilado':
+                    config_data['furniture_type'] = FurnitureType.FURNISHED
+                elif old_value == 'mobilado-cozinha':
+                    config_data['furniture_type'] = FurnitureType.KITCHEN_FURNITURE
+                elif old_value == 'sem-mobilia':
+                    config_data['furniture_type'] = FurnitureType.INDIFFERENT
+                else:
+                    try:
+                        config_data['furniture_type'] = FurnitureType(config_data['furniture_type'])
+                    except ValueError:
+                        config_data['furniture_type'] = FurnitureType.INDIFFERENT
             
             config = SearchConfig(**config_data)
             await scraper.scrape_listings(config, chat_id)
