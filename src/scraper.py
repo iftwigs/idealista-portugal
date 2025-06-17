@@ -152,7 +152,9 @@ class IdealistaScraper:
     async def initialize(self):
         """Initialize the scraper by loading seen listings"""
         try:
-            with open("seen_listings.json", "r") as f:
+            # Use data directory if it exists, otherwise current directory
+            listings_file = 'data/seen_listings.json' if os.path.exists('data') else 'seen_listings.json'
+            with open(listings_file, "r") as f:
                 self.seen_listings = {k: set(v) for k, v in json.load(f).items()}
         except (FileNotFoundError, json.JSONDecodeError):
             self.seen_listings = {}
@@ -167,7 +169,9 @@ class IdealistaScraper:
     
     async def save_seen_listings(self):
         """Save seen listings to file"""
-        with open("seen_listings.json", "w") as f:
+        # Use data directory if it exists, otherwise current directory
+        listings_file = 'data/seen_listings.json' if os.path.exists('data') else 'seen_listings.json'
+        with open(listings_file, "w") as f:
             json.dump({k: list(v) for k, v in self.seen_listings.items()}, f)
     
     async def send_telegram_message(self, chat_id: str, message: str):
@@ -407,7 +411,9 @@ async def main():
     while True:
         # Load user configurations
         try:
-            with open("user_configs.json", "r") as f:
+            # Use data directory if it exists, otherwise current directory
+            config_file = 'data/user_configs.json' if os.path.exists('data') else 'user_configs.json'
+            with open(config_file, "r") as f:
                 user_configs = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             logger.error("No user configurations found")

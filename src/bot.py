@@ -62,7 +62,9 @@ def get_main_menu_keyboard(user_id: int) -> list:
 def load_configs():
     """Load saved configurations from file"""
     try:
-        with open('user_configs.json', 'r') as f:
+        # Use data directory if it exists, otherwise current directory
+        config_file = 'data/user_configs.json' if os.path.exists('data') else 'user_configs.json'
+        with open(config_file, 'r') as f:
             configs = json.load(f)
             for user_id, config in configs.items():
                 # Handle backwards compatibility for property_state -> property_states
@@ -118,10 +120,9 @@ def load_configs():
                 logger.info(f"Loaded config for user {user_id}: {config}")
     except FileNotFoundError:
         # Create empty config file if it doesn't exist
-        asyncio.create_task(save_configs())
+        logger.info("user_configs.json not found, will create on first save")
     except json.JSONDecodeError:
-        logger.warning("Invalid JSON in user_configs.json, creating new file")
-        asyncio.create_task(save_configs())
+        logger.warning("Invalid JSON in user_configs.json, will recreate on next save")
 
 async def save_configs():
     """Save configurations to file with locking for multi-user safety"""
@@ -136,7 +137,9 @@ async def save_configs():
                 config_dict['furniture_type'] = config_dict['furniture_type'].value
                 configs[str(user_id)] = config_dict
             
-            with open('user_configs.json', 'w') as f:
+            # Use data directory if it exists, otherwise current directory
+            config_file = 'data/user_configs.json' if os.path.exists('data') else 'user_configs.json'
+            with open(config_file, 'w') as f:
                 json.dump(configs, f, indent=2)
             logger.info(f"Saved configurations for {len(configs)} users")
         except Exception as e:
