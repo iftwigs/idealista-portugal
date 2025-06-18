@@ -1,14 +1,10 @@
 # fly.toml app configuration file for idealista-notifier Telegram bot
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
 
 app = 'idealista-notifier'
 primary_region = 'cdg'
 
 [build]
 
-# Environment variables
 [env]
   # TELEGRAM_BOT_TOKEN will be set as a secret
 
@@ -26,12 +22,3 @@ primary_region = 'cdg'
 [[mounts]]
   source = "data_volume"
   destination = "/app/data"
-
-# Deployment strategy - single machine with auto-restart
-[deploy]
-  strategy = "immediate"
-  max_unavailable = 0
-
-# Restart policy for reliability
-[restart]
-  policy = "always"
