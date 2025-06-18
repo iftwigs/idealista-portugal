@@ -13,10 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - name: Ensure volume exists
+      - name: Ensure volumes exist
         run: |
-          # Create volume if it doesn't exist (this will fail silently if it already exists)
-          flyctl volumes create data_volume --region cdg --size 1 --yes || echo "Volume already exists"
+          # Create volumes if they don't exist (will fail silently if they already exist)
+          flyctl volumes create data_volume --region cdg --size 1 --yes || echo "Volume 1 already exists"
+          flyctl volumes create data_volume --region cdg --size 1 --yes || echo "Volume 2 already exists"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Deploy to Fly.io

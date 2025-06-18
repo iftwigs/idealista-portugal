@@ -27,7 +27,11 @@ primary_region = 'cdg'
   source = "data_volume"
   destination = "/app/data"
 
-# Deployment strategy - single machine for background service
+# Deployment strategy - single machine with auto-restart
 [deploy]
   strategy = "immediate"
   max_unavailable = 0
+
+# Restart policy for reliability
+[restart]
+  policy = "always"
