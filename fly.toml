@@ -8,19 +8,17 @@ primary_region = 'cdg'
 
 [build]
 
-# No HTTP service needed for Telegram bot
-# Remove the [http_service] section since this is a background service
-
+# Environment variables
 [env]
-  # Environment variables can be set here or via secrets
   # TELEGRAM_BOT_TOKEN will be set as a secret
 
+# Machine configuration
 [[vm]]
   memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
 
-# Ensure the machine stays running (don't auto-stop)
+# Process configuration for background service
 [processes]
   app = "python src/bot.py"
 
@@ -28,3 +26,8 @@ primary_region = 'cdg'
 [[mounts]]
   source = "data_volume"
   destination = "/app/data"
+
+# Deployment strategy - single machine for background service
+[deploy]
+  strategy = "immediate"
+  max_unavailable = 0
