@@ -19,20 +19,22 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+
+[tool.ruff.lint]
 select = ["E", "F", "B", "I", "N", "UP", "PL", "RUF"]
 ignore = []
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/tests/*"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 exclude_lines = [

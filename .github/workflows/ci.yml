@@ -44,7 +44,7 @@ jobs:
     
     - name: Run tests
       run: |
-        python -m pytest src/test_*.py -v
+        python -m pytest tests/ -v
 
   docker-build:
     runs-on: ubuntu-latest
@@ -96,8 +96,8 @@ jobs:
     - name: Run integration tests
       run: |
         # Run integration tests that test the full bot workflow
-        python -m pytest src/test_bot_flow.py::TestMonitoringFlow -v
-        python -m pytest src/test_scraper_enhanced.py::TestTelegramIntegration -v
+        python -m pytest tests/test_bot_flow.py::TestMonitoringFlow -v
+        python -m pytest tests/test_scraper_enhanced.py::TestTelegramIntegration -v
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || 'test_token' }}
 

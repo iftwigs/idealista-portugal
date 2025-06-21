@@ -2,6 +2,10 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 from telegram import Update, CallbackQuery, Message, User
 from telegram.ext import CallbackContext
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from models import SearchConfig, PropertyState, FurnitureType
 
 

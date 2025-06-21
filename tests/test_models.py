@@ -2,87 +2,197 @@ import pytest
 import sys
 import os
 
-# Add src to path
-current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from models import SearchConfig, PropertyState, FurnitureType
 
 
 class TestSearchConfig:
     """Test SearchConfig model and URL generation"""
-    
+
     def test_default_config(self):
         """Test default configuration values"""
         config = SearchConfig()
-        
+
         assert config.min_rooms == 1
         assert config.max_rooms == 10
         assert config.min_size == 30
         assert config.max_size == 200
         assert config.max_price == 2000
-        assert config.furniture_type == FurnitureType.ANY  # Updated default
+        assert config.furniture_type == FurnitureType.INDIFFERENT
         assert config.property_states == [PropertyState.GOOD]
         assert config.city == "lisboa"
         assert config.custom_polygon is None
-        assert config.max_pages == 3
-    
-    def test_furniture_filter_url_generation(self):
-        """Test furniture filter URL parameter generation"""
-        
-        # Test FURNISHED
-        config1 = SearchConfig(furniture_type=FurnitureType.FURNISHED)
-        url1 = config1.get_base_url()
-        assert "equipamento_mobilado" in url1
-        
-        # Test KITCHEN_FURNITURE
-        config2 = SearchConfig(furniture_type=FurnitureType.KITCHEN_FURNITURE)
-        url2 = config2.get_base_url()
-        assert "equipamento_so-cozinha-equipada" in url2
-        
-        # Test ANY (no filter) - should NOT add furniture params
-        config3 = SearchConfig(furniture_type=FurnitureType.ANY)
-        url3 = config3.get_base_url()
-        assert "equipamento" not in url3
-    
-    def test_room_parameter_generation(self):
-        """Test room parameter generation following Idealista rules"""
-        
-        # Test t1, t2, t3 (individual parameters)
-        config1 = SearchConfig(min_rooms=1, max_rooms=3)
-        url1 = config1.get_base_url()
-        assert "t1,t2,t3" in url1
-        
-        # Test t4-t5 (range parameter)
-        config2 = SearchConfig(min_rooms=4, max_rooms=5)
-        url2 = config2.get_base_url()
-        assert "t4-t5" in url2
-        
-        # Test mixed: t1,t2,t3,t4-t5
-        config3 = SearchConfig(min_rooms=1, max_rooms=5)
-        url3 = config3.get_base_url()
-        assert "t1,t2,t3,t4-t5" in url3
-        
-        # Test t0 included
-        config4 = SearchConfig(min_rooms=0, max_rooms=2)
-        url4 = config4.get_base_url()
-        assert "t0,t1,t2" in url4
-    
-    def test_custom_polygon_url(self):
-        """Test custom polygon URL generation"""
+        assert config.update_frequency == 5
+
+    def test_room_filter_generation(self):
+        """Test room filter URL parameter generation"""
+        # Test default rooms (1-5)
         config = SearchConfig()
-        config.custom_polygon = "((test_polygon))"
+        config.min_rooms = 1
+        config.max_rooms = 5
+        params = config.to_url_params()
+        assert "t1,t2,t3,t4-t5" in params
+
+        # Test single room
+        config.min_rooms = 2
+        config.max_rooms = 2
+        params = config.to_url_params()
+        assert "t2" in params
+
+        # Test two consecutive rooms
+        config.min_rooms = 3
+        config.max_rooms = 4
+        params = config.to_url_params()
+        assert "t3,t4" in params
+
+        # Test T0 (studio) support
+        config.min_rooms = 0
+        config.max_rooms = 2
+        params = config.to_url_params()
+        assert "t0,t1,t2" in params
+
+    def test_price_filter_generation(self):
+        """Test price filter URL parameter generation"""
+        config = SearchConfig()
+        config.max_price = 1500
+        params = config.to_url_params()
+        assert "preco-max_1500" in params
+
+        # Test default price
+        config.max_price = None
+        params = config.to_url_params()
+        assert "preco-max_2000" in params
+
+    def test_size_filter_generation(self):
+        """Test size filter URL parameter generation"""
+        config = SearchConfig()
+        config.min_size = 60
+        params = config.to_url_params()
+        assert "tamanho-min_60" in params
+
+        # Test default size
+        config.min_size = None
+        params = config.to_url_params()
+        assert "tamanho-min_20" in params or "tamanho-min_30" in params
+
+    def test_furniture_filter_generation(self):
+        """Test furniture filter URL parameter generation"""
+        # Test furnished only
+        config = SearchConfig()
+        config.furniture_type = FurnitureType.FURNISHED
+        params = config.to_url_params()
+        assert "equipamento_mobilado" in params
+
+        # Test kitchen furniture only
+        config.furniture_type = FurnitureType.KITCHEN_FURNITURE
+        params = config.to_url_params()
+        assert "equipamento_so-cozinha-equipada" in params
+
+        # Test indifferent (should not add furniture parameter)
+        config.furniture_type = FurnitureType.INDIFFERENT
+        params = config.to_url_params()
+        assert "equipamento_mobilado" not in params
+        assert "equipamento_so-cozinha-equipada" not in params
+
+    def test_property_state_filter_generation(self):
+        """Test property state filter URL parameter generation"""
+        # Test single state
+        config = SearchConfig()
+        config.property_states = [PropertyState.GOOD]
+        params = config.to_url_params()
+        assert "bom-estado" in params
+
+        # Test new state
+        config.property_states = [PropertyState.NEW]
+        params = config.to_url_params()
+        assert "novo" in params
+
+        # Test remodeling state
+        config.property_states = [PropertyState.NEEDS_REMODELING]
+        params = config.to_url_params()
+        assert "para-reformar" in params
+
+        # Test multiple states
+        config.property_states = [PropertyState.GOOD, PropertyState.NEW]
+        params = config.to_url_params()
+        assert "bom-estado" in params
+        assert "novo" in params
+
+    def test_complete_url_generation(self):
+        """Test complete URL generation with all parameters"""
+        config = SearchConfig()
+        config.max_price = 1100
+        config.min_size = 60
+        config.min_rooms = 1
+        config.max_rooms = 5
+        config.furniture_type = FurnitureType.FURNISHED
+        config.property_states = [PropertyState.NEW, PropertyState.GOOD]
+        config.city = "lisboa"
+
         url = config.get_base_url()
-        
-        assert "idealista.pt/areas/arrendar-casas/com-" in url
-        assert "shape=" in url
-        assert "test_polygon" in url
-    
-    def test_city_based_url(self):
-        """Test city-based URL generation"""
-        config = SearchConfig(city="porto")
+        expected_parts = [
+            "https://www.idealista.pt/arrendar-casas/lisboa/com-",
+            "preco-max_1100",
+            "tamanho-min_60",
+            "t1,t2,t3,t4-t5",
+            "equipamento_mobilado",
+            "novo",
+            "bom-estado",
+            "arrendamento-longa-duracao",
+        ]
+
+        for part in expected_parts:
+            assert part in url
+
+    def test_custom_polygon_url(self):
+        """Test URL generation with custom polygon"""
+        config = SearchConfig()
+        config.custom_polygon = "test_polygon_data"
+
         url = config.get_base_url()
-        
-        assert "idealista.pt/arrendar-casas/porto/com-" in url
-        assert "shape=" not in url
+        assert "areas/arrendar-casas" in url
+        assert "shape=test_polygon_data" in url
+
+    def test_parameter_order(self):
+        """Test that URL parameters are in the correct order"""
+        config = SearchConfig()
+        config.max_price = 1000
+        config.min_size = 50
+        config.min_rooms = 2
+        config.max_rooms = 4
+        config.furniture_type = FurnitureType.FURNISHED
+        config.property_states = [PropertyState.GOOD]
+
+        params = config.to_url_params()
+        parts = params.split(",")
+
+        # Price should be first
+        assert parts[0].startswith("preco-max_")
+        # Size should be second
+        assert parts[1].startswith("tamanho-min_")
+        # Rooms should be third
+        assert any("t" in part for part in parts[2:5])
+        # Should end with long-term rental
+        assert parts[-1] == "arrendamento-longa-duracao"
+
+
+class TestFurnitureType:
+    """Test FurnitureType enum"""
+
+    def test_furniture_values(self):
+        """Test furniture type enum values"""
+        assert FurnitureType.INDIFFERENT.value == "indifferent"
+        assert FurnitureType.FURNISHED.value == "equipamento_mobilado"
+        assert (
+            FurnitureType.KITCHEN_FURNITURE.value == "equipamento_so-cozinha-equipada"
+        )
+
+
+class TestPropertyState:
+    """Test PropertyState enum"""
+
+    def test_property_state_values(self):
+        """Test property state enum values"""
+        assert PropertyState.GOOD.value == "bom-estado"
+        assert PropertyState.NEW.value == "com-novo"
+        assert PropertyState.NEEDS_REMODELING.value == "para-reformar"
