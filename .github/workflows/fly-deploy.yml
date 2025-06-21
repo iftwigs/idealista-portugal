@@ -10,6 +10,8 @@ jobs:
     name: Deploy app
     runs-on: ubuntu-latest
     concurrency: deploy-group    # optional: ensure only one action runs at a time
+    # Only run if FLY_API_TOKEN secret is available
+    if: ${{ secrets.FLY_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
