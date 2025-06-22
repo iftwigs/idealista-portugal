@@ -206,7 +206,7 @@ class TestFloorFilteringBot:
             floor_type.value for floor_type in config_dict["floor_types"]
         ]
 
-        expected_values = ["com-ultimo-andar", "res-do-chao"]
+        expected_values = ["ultimo-andar", "res-do-chao"]
         assert config_dict["floor_types"] == expected_values
 
         # Test deserialization (loading from JSON)
@@ -225,7 +225,7 @@ class TestFloorFilteringBot:
         url = config.get_base_url()
 
         # Should contain floor parameters
-        assert "com-ultimo-andar" in url
+        assert "ultimo-andar" in url
         assert "andares-intermedios" in url
 
         # Should also contain other parameters

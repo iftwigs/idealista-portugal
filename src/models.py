@@ -16,7 +16,7 @@ class FurnitureType(Enum):
 
 
 class FloorType(Enum):
-    LAST_FLOOR = "com-ultimo-andar"  # Last floor
+    LAST_FLOOR = "ultimo-andar"  # Last floor
     MIDDLE_FLOORS = "andares-intermedios"  # Middle floors
     GROUND_FLOOR = "res-do-chao"  # Ground floor
 

@@ -11,7 +11,7 @@ class TestFloorFiltering:
 
     def test_floor_type_enum_values(self):
         """Test that FloorType enum has correct values"""
-        assert FloorType.LAST_FLOOR.value == "com-ultimo-andar"
+        assert FloorType.LAST_FLOOR.value == "ultimo-andar"
         assert FloorType.MIDDLE_FLOORS.value == "andares-intermedios"
         assert FloorType.GROUND_FLOOR.value == "res-do-chao"
 
@@ -26,7 +26,7 @@ class TestFloorFiltering:
         config = SearchConfig()
         config.floor_types = [FloorType.LAST_FLOOR]
         params = config.to_url_params()
-        assert "com-ultimo-andar" in params
+        assert "ultimo-andar" in params
         assert "andares-intermedios" not in params
         assert "res-do-chao" not in params
 
@@ -34,14 +34,14 @@ class TestFloorFiltering:
         config.floor_types = [FloorType.MIDDLE_FLOORS]
         params = config.to_url_params()
         assert "andares-intermedios" in params
-        assert "com-ultimo-andar" not in params
+        assert "ultimo-andar" not in params
         assert "res-do-chao" not in params
 
         # Test ground floor only
         config.floor_types = [FloorType.GROUND_FLOOR]
         params = config.to_url_params()
         assert "res-do-chao" in params
-        assert "com-ultimo-andar" not in params
+        assert "ultimo-andar" not in params
         assert "andares-intermedios" not in params
 
     def test_multiple_floor_filter_generation(self):
@@ -50,7 +50,7 @@ class TestFloorFiltering:
         config = SearchConfig()
         config.floor_types = [FloorType.LAST_FLOOR, FloorType.MIDDLE_FLOORS]
         params = config.to_url_params()
-        assert "com-ultimo-andar" in params
+        assert "ultimo-andar" in params
         assert "andares-intermedios" in params
         assert "res-do-chao" not in params
 
@@ -61,7 +61,7 @@ class TestFloorFiltering:
             FloorType.GROUND_FLOOR,
         ]
         params = config.to_url_params()
-        assert "com-ultimo-andar" in params
+        assert "ultimo-andar" in params
         assert "andares-intermedios" in params
         assert "res-do-chao" in params
 
@@ -69,7 +69,7 @@ class TestFloorFiltering:
         config.floor_types = [FloorType.GROUND_FLOOR, FloorType.LAST_FLOOR]
         params = config.to_url_params()
         assert "res-do-chao" in params
-        assert "com-ultimo-andar" in params
+        assert "ultimo-andar" in params
         assert "andares-intermedios" not in params
 
     def test_no_floor_filter_generation(self):
@@ -79,7 +79,7 @@ class TestFloorFiltering:
         params = config.to_url_params()
 
         # No floor parameters should be present
-        assert "com-ultimo-andar" not in params
+        assert "ultimo-andar" not in params
         assert "andares-intermedios" not in params
         assert "res-do-chao" not in params
 
@@ -98,7 +98,7 @@ class TestFloorFiltering:
         # Find where floor parameters appear
         floor_indices = []
         for i, part in enumerate(parts):
-            if part in ["com-ultimo-andar", "andares-intermedios", "res-do-chao"]:
+            if part in ["ultimo-andar", "andares-intermedios", "res-do-chao"]:
                 floor_indices.append(i)
 
         # Floor parameters should come after property states (if any) and before long-term rental
@@ -126,7 +126,7 @@ class TestFloorFiltering:
             "preco-max_1500",
             "tamanho-min_60",
             "t2,t3,t4",
-            "com-ultimo-andar",
+            "ultimo-andar",
             "andares-intermedios",
             "arrendamento-longa-duracao",
         ]
@@ -171,7 +171,7 @@ class TestFloorFiltering:
         assert "equipamento_mobilado" in params
         assert "bom-estado" in params
         assert "novo" in params
-        assert "com-ultimo-andar" in params
+        assert "ultimo-andar" in params
         assert "arrendamento-longa-duracao" in params
 
     def test_floor_list_modification(self):
@@ -215,7 +215,7 @@ class TestFloorFiltering:
         params = config.to_url_params()
         # Should only appear once in the URL
         assert (
-            params.count("com-ultimo-andar") == 2
+            params.count("ultimo-andar") == 2
         )  # Due to the duplicates in the list
 
 
