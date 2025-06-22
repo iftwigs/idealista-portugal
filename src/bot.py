@@ -133,11 +133,25 @@ def load_configs():
                         PropertyState(state) for state in config["property_states"]
                     ]
 
-                # Handle floor_types conversion if needed
+                # Handle floor_types conversion if needed (with backward compatibility)
                 if "floor_types" in config:
-                    config["floor_types"] = [
-                        FloorType(floor_type) for floor_type in config["floor_types"]
-                    ]
+                    converted_floor_types = []
+                    for floor_type in config["floor_types"]:
+                        # Handle backward compatibility for old floor values
+                        if floor_type == "com-ultimo-andar":
+                            converted_floor_types.append(FloorType.LAST_FLOOR)
+                        elif floor_type == "ultimo-andar":
+                            converted_floor_types.append(FloorType.LAST_FLOOR)
+                        elif floor_type == "andares-intermedios":
+                            converted_floor_types.append(FloorType.MIDDLE_FLOORS)
+                        elif floor_type == "res-do-chao":
+                            converted_floor_types.append(FloorType.GROUND_FLOOR)
+                        else:
+                            try:
+                                converted_floor_types.append(FloorType(floor_type))
+                            except ValueError:
+                                logger.warning(f"Unknown floor type '{floor_type}', skipping")
+                    config["floor_types"] = converted_floor_types
 
                 # Handle backwards compatibility for furniture setting
                 if "has_furniture" in config and "furniture_type" not in config:
