@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from models import FurnitureType, PropertyState, SearchConfig
+from models import FloorType, FurnitureType, PropertyState, SearchConfig
 
 # Configuration file locking for multi-user safety
 config_lock = asyncio.Lock()
@@ -23,6 +23,7 @@ from telegram.ext import ContextTypes
 
 from filters import (
     set_city,
+    set_floor,
     set_frequency,
     set_furniture,
     set_pagination,
@@ -56,9 +57,10 @@ logger = logging.getLogger(__name__)
     SETTING_POLYGON,
     SETTING_FREQUENCY,
     SETTING_PAGES,
+    SETTING_FLOOR,
     WAITING_FOR_PRICE,
     WAITING_FOR_POLYGON_URL,
-) = range(12)
+) = range(13)
 
 # Store user configurations and monitoring tasks
 user_configs: Dict[int, SearchConfig] = {}
@@ -73,6 +75,7 @@ def get_main_menu_keyboard(user_id: int) -> list:
         [InlineKeyboardButton("Set maximum price", callback_data="price")],
         [InlineKeyboardButton("Set furniture preference", callback_data="furniture")],
         [InlineKeyboardButton("Set state of the property", callback_data="state")],
+        [InlineKeyboardButton("Set floor preference", callback_data="floor")],
         [InlineKeyboardButton("Set city", callback_data="city")],
         [InlineKeyboardButton("Set a custom area (polygon)", callback_data="polygon")],
         [InlineKeyboardButton("Set update frequency", callback_data="frequency")],
@@ -130,6 +133,12 @@ def load_configs():
                         PropertyState(state) for state in config["property_states"]
                     ]
 
+                # Handle floor_types conversion if needed
+                if "floor_types" in config:
+                    config["floor_types"] = [
+                        FloorType(floor_type) for floor_type in config["floor_types"]
+                    ]
+
                 # Handle backwards compatibility for furniture setting
                 if "has_furniture" in config and "furniture_type" not in config:
                     config["furniture_type"] = (
@@ -182,6 +191,7 @@ def load_configs():
                     "max_price",
                     "furniture_type",
                     "property_states",
+                    "floor_types",
                     "city",
                     "custom_polygon",
                     "update_frequency",
@@ -213,6 +223,10 @@ async def save_configs():
                 ]
                 # Convert FurnitureType to string value
                 config_dict["furniture_type"] = config_dict["furniture_type"].value
+                # Convert FloorType list to string values
+                config_dict["floor_types"] = [
+                    floor_type.value for floor_type in config_dict["floor_types"]
+                ]
                 configs[str(user_id)] = config_dict
 
             # Use data directory if it exists, otherwise current directory
@@ -298,6 +312,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Max Price: {config.max_price}€\n"
             f"Furniture: {config.furniture_type.name.replace('_', ' ').title()}\n"
             f"State: {', '.join([state.name.replace('_', ' ').title() for state in config.property_states])}\n"
+            f"Floor: {', '.join([floor.name.replace('_', ' ').title() for floor in config.floor_types]) if config.floor_types else 'Any'}\n"
             f"{'Custom Area: Set' if config.custom_polygon else f'City: {config.city}'}\n"
             f"Update Frequency: {config.update_frequency} minutes\n"
             f"Pages per search: {config.max_pages} (~{config.max_pages * 30} listings)"
@@ -331,6 +346,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await set_furniture(update, context)
     elif query.data == "state":
         return await set_state(update, context)
+    elif query.data == "floor":
+        return await set_floor(update, context)
     elif query.data == "city":
         return await set_city(update, context)
     elif query.data == "frequency":
@@ -566,6 +583,74 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reply_markup=reply_markup,
         )
         return SETTING_STATE
+
+    elif query.data.startswith("floor_toggle_"):
+        _, _, floor = query.data.split("_")
+        user_id = update.effective_user.id
+
+        # Ensure user config exists
+        if user_id not in user_configs:
+            user_configs[user_id] = SearchConfig()
+
+        config = user_configs[user_id]
+
+        # Toggle the floor type in the list
+        if floor == "last":
+            target_floor = FloorType.LAST_FLOOR
+        elif floor == "middle":
+            target_floor = FloorType.MIDDLE_FLOORS
+        elif floor == "ground":
+            target_floor = FloorType.GROUND_FLOOR
+        else:
+            return SETTING_FLOOR
+
+        if target_floor in config.floor_types:
+            # Remove if already selected
+            config.floor_types.remove(target_floor)
+        else:
+            # Add if not selected
+            config.floor_types.append(target_floor)
+
+        await save_configs()
+
+        # Debug: Log the current floor selection
+        logger.info(
+            f"Floor types updated for user {user_id}: {[floor.name for floor in config.floor_types]}"
+        )
+
+        # Manually refresh the keyboard to show updated checkboxes
+        keyboard = []
+
+        # Last Floor
+        is_last_selected = FloorType.LAST_FLOOR in config.floor_types
+        last_text = "✅ Last Floor" if is_last_selected else "☐ Last Floor"
+        keyboard.append(
+            [InlineKeyboardButton(last_text, callback_data="floor_toggle_last")]
+        )
+
+        # Middle Floors
+        is_middle_selected = FloorType.MIDDLE_FLOORS in config.floor_types
+        middle_text = "✅ Middle Floors" if is_middle_selected else "☐ Middle Floors"
+        keyboard.append(
+            [InlineKeyboardButton(middle_text, callback_data="floor_toggle_middle")]
+        )
+
+        # Ground Floor
+        is_ground_selected = FloorType.GROUND_FLOOR in config.floor_types
+        ground_text = "✅ Ground Floor" if is_ground_selected else "☐ Ground Floor"
+        keyboard.append(
+            [InlineKeyboardButton(ground_text, callback_data="floor_toggle_ground")]
+        )
+
+        keyboard.append([InlineKeyboardButton("Back", callback_data="back")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            "Select floor preferences (you can select multiple, or none for no filtering):",
+            reply_markup=reply_markup,
+        )
+        return SETTING_FLOOR
 
     elif query.data.startswith("city_"):
         _, city = query.data.split("_")
@@ -1199,6 +1284,7 @@ def main():
             SETTING_SIZE: [CallbackQueryHandler(button_handler)],
             SETTING_FURNITURE: [CallbackQueryHandler(button_handler)],
             SETTING_STATE: [CallbackQueryHandler(button_handler)],
+            SETTING_FLOOR: [CallbackQueryHandler(button_handler)],
             SETTING_CITY: [CallbackQueryHandler(button_handler)],
             SETTING_FREQUENCY: [CallbackQueryHandler(button_handler)],
             SETTING_PAGES: [CallbackQueryHandler(button_handler)],

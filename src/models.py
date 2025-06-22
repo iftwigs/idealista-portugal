@@ -15,6 +15,12 @@ class FurnitureType(Enum):
     KITCHEN_FURNITURE = "equipamento_so-cozinha-equipada"  # Kitchen only
 
 
+class FloorType(Enum):
+    LAST_FLOOR = "com-ultimo-andar"  # Last floor
+    MIDDLE_FLOORS = "andares-intermedios"  # Middle floors
+    GROUND_FLOOR = "res-do-chao"  # Ground floor
+
+
 class SizeRange(Enum):
     """Size ranges in square meters (minimum size)"""
 
@@ -49,10 +55,13 @@ class SearchConfig:
     max_price: int = 2000
     furniture_type: FurnitureType = FurnitureType.INDIFFERENT
     property_states: List[PropertyState] = None
+    floor_types: List[FloorType] = None
 
     def __post_init__(self):
         if self.property_states is None:
             self.property_states = [PropertyState.GOOD]
+        if self.floor_types is None:
+            self.floor_types = []  # Empty list means no floor filtering
 
     # Location
     city: str = "lisboa"
@@ -144,7 +153,12 @@ class SearchConfig:
                     state_values
                 )  # Add as separate parameters, not comma-separated
 
-        # 6. Always add long-term rental filter
+        # 6. Floor types (only if any are specified)
+        if self.floor_types:
+            floor_values = [floor_type.value for floor_type in self.floor_types]
+            params.extend(floor_values)  # Add as separate parameters
+
+        # 7. Always add long-term rental filter
         params.append("arrendamento-longa-duracao")
 
         return ",".join(params)

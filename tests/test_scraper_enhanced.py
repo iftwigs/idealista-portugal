@@ -134,7 +134,7 @@ class TestScrapingFunctionality:
         """Test room count filtering"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 
@@ -172,7 +172,7 @@ class TestScrapingFunctionality:
         """Test price filtering"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 
@@ -210,7 +210,7 @@ class TestScrapingFunctionality:
         """Test size filtering"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 
@@ -286,7 +286,7 @@ class TestScrapingFunctionality:
         """Test filtering of excluded terms (short-term rentals)"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 
@@ -318,7 +318,7 @@ class TestScrapingFunctionality:
         """Test filtering of excluded floors"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 
@@ -548,7 +548,7 @@ class TestTelegramIntegration:
         """Test the format of notification messages"""
         scraper = IdealistaScraper()
         await scraper.initialize()
-        
+
         # Clear any existing seen listings for this test user to ensure fresh processing
         scraper.seen_listings["test_user"] = set()
 

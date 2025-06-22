@@ -1,7 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from models import FurnitureType, PropertyState, SearchConfig
+from models import FloorType, FurnitureType, PropertyState, SearchConfig
 
 # Conversation states
 (
@@ -15,9 +15,10 @@ from models import FurnitureType, PropertyState, SearchConfig
     SETTING_POLYGON,
     SETTING_FREQUENCY,
     SETTING_PAGES,
+    SETTING_FLOOR,
     WAITING_FOR_PRICE,
     WAITING_FOR_POLYGON_URL,
-) = range(12)
+) = range(13)
 
 
 async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -309,3 +310,54 @@ async def set_polygon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         message_text, reply_markup=reply_markup, parse_mode="Markdown"
     )
     return WAITING_FOR_POLYGON_URL
+
+
+async def set_floor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle floor setting with checkbox logic"""
+    query = update.callback_query
+    await query.answer()
+
+    # Get current user config to show selected floor types
+    from bot import user_configs
+
+    user_id = update.effective_user.id
+
+    # Ensure user config exists
+    if user_id not in user_configs:
+        user_configs[user_id] = SearchConfig()
+
+    config = user_configs[user_id]
+
+    # Create checkbox-style buttons
+    keyboard = []
+
+    # Last Floor
+    is_last_selected = FloorType.LAST_FLOOR in config.floor_types
+    last_text = "✅ Last Floor" if is_last_selected else "☐ Last Floor"
+    keyboard.append(
+        [InlineKeyboardButton(last_text, callback_data="floor_toggle_last")]
+    )
+
+    # Middle Floors
+    is_middle_selected = FloorType.MIDDLE_FLOORS in config.floor_types
+    middle_text = "✅ Middle Floors" if is_middle_selected else "☐ Middle Floors"
+    keyboard.append(
+        [InlineKeyboardButton(middle_text, callback_data="floor_toggle_middle")]
+    )
+
+    # Ground Floor
+    is_ground_selected = FloorType.GROUND_FLOOR in config.floor_types
+    ground_text = "✅ Ground Floor" if is_ground_selected else "☐ Ground Floor"
+    keyboard.append(
+        [InlineKeyboardButton(ground_text, callback_data="floor_toggle_ground")]
+    )
+
+    keyboard.append([InlineKeyboardButton("Back", callback_data="back")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.message.edit_text(
+        "Select floor preferences (you can select multiple, or none for no filtering):",
+        reply_markup=reply_markup,
+    )
+    return SETTING_FLOOR
