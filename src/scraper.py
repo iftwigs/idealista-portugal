@@ -208,12 +208,31 @@ class IdealistaScraper:
         with open(listings_file, "w") as f:
             json.dump({k: list(v) for k, v in self.seen_listings.items()}, f)
 
-    async def send_telegram_message(self, chat_id: str, message: str):
-        """Send message via Telegram"""
+    async def send_telegram_message(self, chat_id: str, message: str, image_url: str = None):
+        """Send message via Telegram, optionally with an image"""
         try:
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-            logger.debug(f"Successfully sent Telegram message to {chat_id}")
+            
+            if image_url:
+                # Send photo with caption
+                try:
+                    await bot.send_photo(
+                        chat_id=chat_id, 
+                        photo=image_url, 
+                        caption=message, 
+                        parse_mode="Markdown"
+                    )
+                    logger.debug(f"Successfully sent Telegram photo message to {chat_id}")
+                except Exception as photo_error:
+                    # If photo sending fails, fall back to text message
+                    logger.warning(f"Failed to send photo, falling back to text: {photo_error}")
+                    await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                    logger.debug(f"Successfully sent fallback text message to {chat_id}")
+            else:
+                # Send text message only
+                await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                logger.debug(f"Successfully sent Telegram text message to {chat_id}")
+                
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
@@ -483,9 +502,28 @@ class IdealistaScraper:
                         else:
                             state_status = "❓ State unknown"
 
+                        # Extract property image URL
+                        image_url = None
+                        try:
+                            # Look for the main property image
+                            img_element = listing.find("img", alt="Primeira foto do imóvel")
+                            if img_element and img_element.get('src'):
+                                image_url = img_element.get('src')
+                                # Convert blur URL to higher quality if possible
+                                if '/blur/' in image_url:
+                                    # Replace blur with higher quality version
+                                    image_url = image_url.replace('/blur/480_360_mq/', '/blur/680_510_mq/')
+                                logger.debug(f"Found image URL for {title}: {image_url}")
+                            else:
+                                logger.debug(f"No image found for {title}")
+                        except Exception as e:
+                            logger.warning(f"Error extracting image for {title}: {e}")
+                            image_url = None
+
                         # Add furniture and state status to listing data
                         listing_data["furniture_status"] = furniture_status
                         listing_data["state_status"] = state_status
+                        listing_data["image_url"] = image_url
 
                         page_listings.append(listing_data)
                         new_listings_this_page += 1
@@ -499,7 +537,7 @@ class IdealistaScraper:
                         print(
                             f"DEBUG: About to send telegram message for {link} (page {current_page})"
                         )
-                        await self.send_telegram_message(chat_id, message)
+                        await self.send_telegram_message(chat_id, message, image_url)
 
                         # Track listing notification in stats
                         try:
