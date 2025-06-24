@@ -147,7 +147,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -185,7 +185,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -225,7 +225,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -265,7 +265,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -298,7 +298,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -330,7 +330,7 @@ class TestScrapingFunctionality:
         # Mock send_telegram_message to capture sent messages
         sent_messages = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             sent_messages.append(message)
 
         scraper.send_telegram_message = mock_send_message
@@ -364,10 +364,10 @@ class TestScrapingFunctionality:
         sent_messages_1 = []
         sent_messages_2 = []
 
-        async def mock_send_message_1(chat_id, message):
+        async def mock_send_message_1(chat_id, message, image_url=None):
             sent_messages_1.append(message)
 
-        async def mock_send_message_2(chat_id, message):
+        async def mock_send_message_2(chat_id, message, image_url=None):
             sent_messages_2.append(message)
 
         # First scrape
@@ -392,6 +392,10 @@ class TestScrapingFunctionality:
         """Test that different users have separate seen listings"""
         scraper = IdealistaScraper()
         await scraper.initialize()
+        
+        # Clear seen listings for both users to ensure clean test state
+        scraper.seen_listings["user1"] = set()
+        scraper.seen_listings["user2"] = set()
 
         config = SearchConfig()
         config.max_price = 5000
@@ -402,7 +406,7 @@ class TestScrapingFunctionality:
         sent_messages_user1 = []
         sent_messages_user2 = []
 
-        async def mock_send_message(chat_id, message):
+        async def mock_send_message(chat_id, message, image_url=None):
             if chat_id == "user1":
                 sent_messages_user1.append(message)
             elif chat_id == "user2":
