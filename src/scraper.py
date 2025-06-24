@@ -214,15 +214,22 @@ class IdealistaScraper:
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
             
             if image_url:
-                # Send photo with caption
+                # Download image first, then send as file to avoid Telegram access issues
                 try:
-                    await bot.send_photo(
-                        chat_id=chat_id, 
-                        photo=image_url, 
-                        caption=message, 
-                        parse_mode="Markdown"
-                    )
-                    logger.debug(f"Successfully sent Telegram photo message to {chat_id}")
+                    image_data = await self._download_image(image_url)
+                    if image_data:
+                        await bot.send_photo(
+                            chat_id=chat_id, 
+                            photo=image_data, 
+                            caption=message, 
+                            parse_mode="Markdown"
+                        )
+                        logger.debug(f"Successfully sent Telegram photo message to {chat_id}")
+                    else:
+                        # Image download failed, send text only
+                        logger.warning(f"Failed to download image from {image_url}, sending text only")
+                        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                        logger.debug(f"Successfully sent fallback text message to {chat_id}")
                 except Exception as photo_error:
                     # If photo sending fails, fall back to text message
                     logger.warning(f"Failed to send photo, falling back to text: {photo_error}")
@@ -235,6 +242,39 @@ class IdealistaScraper:
                 
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+
+    async def _download_image(self, image_url: str) -> Optional[bytes]:
+        """Download image from URL and return as bytes for Telegram"""
+        try:
+            # Use the same headers as for web scraping to ensure access
+            headers = {
+                "User-Agent": random.choice(USER_AGENTS),
+                "Accept": "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "image",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Site": "cross-site",
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        image_data = await response.read()
+                        logger.debug(f"Successfully downloaded image: {len(image_data)} bytes from {image_url}")
+                        return image_data
+                    else:
+                        logger.warning(f"Failed to download image: HTTP {response.status} from {image_url}")
+                        return None
+                        
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout downloading image from {image_url}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error downloading image from {image_url}: {e}")
+            return None
 
     async def scrape_listings(
         self,
