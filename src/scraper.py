@@ -218,13 +218,16 @@ class IdealistaScraper:
                 try:
                     image_data = await self._download_image(image_url)
                     if image_data:
+                        logger.info(f"Sending image to {chat_id}: {len(image_data)} bytes, JPEG: {image_data.startswith(b'\\xff\\xd8')}")
+                        
+                        # Send as raw bytes - simpler and more reliable
                         await bot.send_photo(
                             chat_id=chat_id, 
                             photo=image_data, 
                             caption=message, 
                             parse_mode="Markdown"
                         )
-                        logger.debug(f"Successfully sent Telegram photo message to {chat_id}")
+                        logger.info(f"Successfully sent Telegram photo message to {chat_id}")
                     else:
                         # Image download failed, send text only
                         logger.warning(f"Failed to download image from {image_url}, sending text only")
