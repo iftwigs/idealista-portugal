@@ -9,7 +9,7 @@ from typing import Dict, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram import Bot
+from telegram import Bot, InputMediaPhoto
 
 from models import FurnitureType, PropertyState, SearchConfig
 
@@ -208,42 +208,67 @@ class IdealistaScraper:
         with open(listings_file, "w") as f:
             json.dump({k: list(v) for k, v in self.seen_listings.items()}, f)
 
-    async def send_telegram_message(self, chat_id: str, message: str, image_url: str = None):
-        """Send message via Telegram, optionally with an image"""
+    async def send_telegram_message(
+        self, chat_id: str, message: str, image_urls: list = None
+    ):
+        """Send message via Telegram, optionally with multiple images as media group"""
         try:
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            
-            if image_url:
-                # Download image first, then send as file to avoid Telegram access issues
+
+            if image_urls and len(image_urls) > 0:
                 try:
-                    image_data = await self._download_image(image_url)
-                    if image_data:
-                        jpeg_header = b'\xff\xd8'
-                        logger.info(f"Sending image to {chat_id}: {len(image_data)} bytes, JPEG: {image_data.startswith(jpeg_header)}")
-                        
-                        # Send as raw bytes - simpler and more reliable
-                        await bot.send_photo(
-                            chat_id=chat_id, 
-                            photo=image_data, 
-                            caption=message, 
-                            parse_mode="Markdown"
+                    # Download all images first
+                    media_items = []
+                    for i, image_url in enumerate(
+                        image_urls[:10]
+                    ):  # Limit to 10 images
+                        image_data = await self._download_image(image_url)
+                        if image_data:
+                            # First image gets the caption, others don't
+                            caption = message if i == 0 else None
+                            media_items.append(
+                                InputMediaPhoto(
+                                    media=image_data,
+                                    caption=caption,
+                                    parse_mode="Markdown",
+                                )
+                            )
+
+                    if media_items:
+                        logger.info(f"Sending {len(media_items)} images to {chat_id}")
+                        await bot.send_media_group(chat_id=chat_id, media=media_items)
+                        logger.info(
+                            f"Successfully sent Telegram media group to {chat_id}"
                         )
-                        logger.info(f"Successfully sent Telegram photo message to {chat_id}")
                     else:
-                        # Image download failed, send text only
-                        logger.warning(f"Failed to download image from {image_url}, sending text only")
-                        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-                        logger.debug(f"Successfully sent fallback text message to {chat_id}")
+                        # No images downloaded successfully, send text only
+                        logger.warning(
+                            f"Failed to download any images, sending text only"
+                        )
+                        await bot.send_message(
+                            chat_id=chat_id, text=message, parse_mode="Markdown"
+                        )
+                        logger.debug(
+                            f"Successfully sent fallback text message to {chat_id}"
+                        )
                 except Exception as photo_error:
-                    # If photo sending fails, fall back to text message
-                    logger.warning(f"Failed to send photo, falling back to text: {photo_error}")
-                    await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-                    logger.debug(f"Successfully sent fallback text message to {chat_id}")
+                    # If media group sending fails, fall back to text message
+                    logger.warning(
+                        f"Failed to send media group, falling back to text: {photo_error}"
+                    )
+                    await bot.send_message(
+                        chat_id=chat_id, text=message, parse_mode="Markdown"
+                    )
+                    logger.debug(
+                        f"Successfully sent fallback text message to {chat_id}"
+                    )
             else:
                 # Send text message only
-                await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                await bot.send_message(
+                    chat_id=chat_id, text=message, parse_mode="Markdown"
+                )
                 logger.debug(f"Successfully sent Telegram text message to {chat_id}")
-                
+
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
@@ -262,17 +287,23 @@ class IdealistaScraper:
                 "Sec-Fetch-Mode": "no-cors",
                 "Sec-Fetch-Site": "cross-site",
             }
-            
+
             async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, headers=headers, timeout=10) as response:
+                async with session.get(
+                    image_url, headers=headers, timeout=10
+                ) as response:
                     if response.status == 200:
                         image_data = await response.read()
-                        logger.debug(f"Successfully downloaded image: {len(image_data)} bytes from {image_url}")
+                        logger.debug(
+                            f"Successfully downloaded image: {len(image_data)} bytes from {image_url}"
+                        )
                         return image_data
                     else:
-                        logger.warning(f"Failed to download image: HTTP {response.status} from {image_url}")
+                        logger.warning(
+                            f"Failed to download image: HTTP {response.status} from {image_url}"
+                        )
                         return None
-                        
+
         except asyncio.TimeoutError:
             logger.warning(f"Timeout downloading image from {image_url}")
             return None
@@ -546,28 +577,56 @@ class IdealistaScraper:
                         else:
                             state_status = "❓ State unknown"
 
-                        # Extract property image URL
-                        image_url = None
+                        # Extract property image URLs from multimedia container
+                        image_urls = []
                         try:
-                            # Look for the main property image
-                            img_element = listing.find("img", alt="Primeira foto do imóvel")
-                            if img_element and img_element.get('src'):
-                                image_url = img_element.get('src')
-                                # Convert blur URL to higher quality if possible
-                                if '/blur/' in image_url:
-                                    # Replace blur with higher quality version
-                                    image_url = image_url.replace('/blur/480_360_mq/', '/blur/680_510_mq/')
-                                logger.debug(f"Found image URL for {title}: {image_url}")
+                            # Look for multimedia-container div
+                            multimedia_container = listing.find(
+                                "div", class_="multimedia-container"
+                            )
+                            if multimedia_container:
+                                main_multimedia = multimedia_container.find(
+                                    "div", class_="main-multimedia"
+                                )
+                                if main_multimedia:
+                                    # Find all picture elements and extract jpeg sources
+                                    pictures = main_multimedia.find_all("picture")
+                                    for picture in pictures[
+                                        :10
+                                    ]:  # Limit to first 10 images
+                                        # Look for source with image/jpeg type
+                                        jpeg_source = picture.find(
+                                            "source", type="image/jpeg"
+                                        )
+                                        if jpeg_source and jpeg_source.get("srcset"):
+                                            srcset = jpeg_source.get("srcset")
+                                            # Extract the first URL from srcset (usually highest quality)
+                                            image_url = srcset.split(",")[0].split()[0]
+                                            image_urls.append(image_url)
+                                            logger.debug(
+                                                f"Found image URL for {title}: {image_url}"
+                                            )
+
+                                    if not image_urls:
+                                        logger.debug(
+                                            f"No images found in multimedia container for {title}"
+                                        )
+                                else:
+                                    logger.debug(
+                                        f"No main-multimedia found for {title}"
+                                    )
                             else:
-                                logger.debug(f"No image found for {title}")
+                                logger.debug(
+                                    f"No multimedia-container found for {title}"
+                                )
                         except Exception as e:
-                            logger.warning(f"Error extracting image for {title}: {e}")
-                            image_url = None
+                            logger.warning(f"Error extracting images for {title}: {e}")
+                            image_urls = []
 
                         # Add furniture and state status to listing data
                         listing_data["furniture_status"] = furniture_status
                         listing_data["state_status"] = state_status
-                        listing_data["image_url"] = image_url
+                        listing_data["image_urls"] = image_urls
 
                         page_listings.append(listing_data)
                         new_listings_this_page += 1
@@ -581,7 +640,7 @@ class IdealistaScraper:
                         print(
                             f"DEBUG: About to send telegram message for {link} (page {current_page})"
                         )
-                        await self.send_telegram_message(chat_id, message, image_url)
+                        await self.send_telegram_message(chat_id, message, image_urls)
 
                         # Track listing notification in stats
                         try:

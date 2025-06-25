@@ -76,23 +76,24 @@ class TestImageFunctionality:
              patch.object(scraper, '_download_image', new_callable=AsyncMock, return_value=fake_image_data):
             
             mock_bot = MagicMock()
-            mock_bot.send_photo = AsyncMock()
+            mock_bot.send_media_group = AsyncMock()
             mock_bot_class.return_value = mock_bot
             
             # Test sending with image
             await scraper.send_telegram_message(
                 chat_id="12345",
                 message="Test message",
-                image_url="https://example.com/image.jpg"
+                image_urls=["https://example.com/image.jpg"]
             )
             
-            # Verify send_photo was called with image data (not URL)
-            mock_bot.send_photo.assert_called_once_with(
-                chat_id="12345",
-                photo=fake_image_data,
-                caption="Test message",
-                parse_mode="Markdown"
-            )
+            # Verify send_media_group was called with image data (not URL)
+            mock_bot.send_media_group.assert_called_once()
+            call_args = mock_bot.send_media_group.call_args
+            assert call_args[1]['chat_id'] == "12345"
+            # Check that media group contains our image data
+            media_items = call_args[1]['media']
+            assert len(media_items) == 1
+            assert media_items[0].caption == "Test message"
 
     @pytest.mark.asyncio
     async def test_send_telegram_message_without_image(self):
@@ -129,7 +130,7 @@ class TestImageFunctionality:
              patch.object(scraper, '_download_image', new_callable=AsyncMock, return_value=fake_image_data):
             
             mock_bot = MagicMock()
-            mock_bot.send_photo = AsyncMock(side_effect=Exception("Photo upload failed"))
+            mock_bot.send_media_group = AsyncMock(side_effect=Exception("Media group upload failed"))
             mock_bot.send_message = AsyncMock()
             mock_bot_class.return_value = mock_bot
             
@@ -137,11 +138,11 @@ class TestImageFunctionality:
             await scraper.send_telegram_message(
                 chat_id="12345",
                 message="Test message",
-                image_url="https://example.com/image.jpg"
+                image_urls=["https://example.com/image.jpg"]
             )
             
-            # Verify send_photo was attempted
-            mock_bot.send_photo.assert_called_once()
+            # Verify send_media_group was attempted
+            mock_bot.send_media_group.assert_called_once()
             
             # Verify fallback to send_message
             mock_bot.send_message.assert_called_once_with(
@@ -167,7 +168,7 @@ class TestImageFunctionality:
             await scraper.send_telegram_message(
                 chat_id="12345",
                 message="Test message",
-                image_url="https://invalid-url.com/broken.jpg"
+                image_urls=["https://invalid-url.com/broken.jpg"]
             )
             
             # Verify fallback to send_message (no photo attempt since download failed)
