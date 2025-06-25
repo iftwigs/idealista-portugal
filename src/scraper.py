@@ -317,6 +317,7 @@ class IdealistaScraper:
         chat_id: str,
         max_pages: int = 3,
         force_all_pages: bool = False,
+        test_mode: bool = False,
     ):
         """Scrape listings based on configuration with pagination support
 
@@ -325,6 +326,7 @@ class IdealistaScraper:
             chat_id: User's chat ID
             max_pages: Maximum number of pages to scrape (default 3 for safety)
             force_all_pages: If True, scrape all pages even if no new listings found
+            test_mode: If True, send at least one message with last seen listing if no new ones found
         """
         # Ensure chat_id is a string
         chat_id = str(chat_id)
@@ -699,7 +701,105 @@ class IdealistaScraper:
                 f"PAGINATION SUMMARY for user {chat_id}: Scraped {total_pages_scraped} pages, found {len(all_listings)} total matches"
             )
 
+            # Test mode: Send at least one message with last seen listing if no new ones found
+            if test_mode and len(all_listings) == 0 and chat_id in self.seen_listings:
+                await self._send_test_message_with_last_seen(config, chat_id)
+
             return all_listings
+
+    async def _send_test_message_with_last_seen(self, config: SearchConfig, chat_id: str):
+        """Send a test message using the most recent listing for demonstration purposes"""
+        try:
+            logger.info(f"TEST MODE: Sending test message with last seen listing for user {chat_id}")
+            
+            # Get the first page to find a recent listing
+            base_url = config.get_base_url()
+            
+            async with aiohttp.ClientSession() as session:
+                page_content = await fetch_page(session, base_url, chat_id)
+                if not page_content:
+                    logger.warning(f"TEST MODE: Could not fetch page for test message")
+                    return
+                
+                soup = BeautifulSoup(page_content, "html.parser")
+                listing_elements = soup.find_all("article", class_="item")
+                
+                if not listing_elements:
+                    logger.warning(f"TEST MODE: No listings found on page for test message")
+                    return
+                
+                # Use the first listing as test example
+                listing = listing_elements[0]
+                
+                # Extract listing data (similar to regular extraction logic)
+                title_element = listing.find("a", class_="item-link")
+                if not title_element:
+                    logger.warning(f"TEST MODE: Could not extract title for test message")
+                    return
+                
+                title = title_element.get_text(strip=True)
+                link = "https://www.idealista.pt" + title_element.get("href", "")
+                
+                # Extract price
+                price_element = listing.find("span", class_="item-price")
+                price = price_element.get_text(strip=True) if price_element else "Price not available"
+                
+                # Extract rooms
+                rooms_element = listing.find("span", class_="item-detail")
+                rooms = rooms_element.get_text(strip=True) if rooms_element else "Rooms not available"
+                
+                # Extract size
+                size_elements = listing.find_all("span", class_="item-detail")
+                size = "Size not available"
+                for element in size_elements:
+                    text = element.get_text(strip=True)
+                    if "m²" in text:
+                        size = text
+                        break
+                
+                # Extract floor
+                floor = "Floor not available"
+                for element in size_elements:
+                    text = element.get_text(strip=True)
+                    if "º" in text or "floor" in text.lower():
+                        floor = text
+                        break
+                
+                # Extract images
+                image_urls = []
+                try:
+                    multimedia_container = listing.find("div", class_="multimedia-container")
+                    if multimedia_container:
+                        main_multimedia = multimedia_container.find("div", class_="main-multimedia")
+                        if main_multimedia:
+                            pictures = main_multimedia.find_all("picture")
+                            for picture in pictures[:3]:  # Limit to 3 images for test
+                                jpeg_source = picture.find("source", type="image/jpeg")
+                                if jpeg_source and jpeg_source.get("srcset"):
+                                    srcset = jpeg_source.get("srcset")
+                                    image_url = srcset.split(",")[0].split()[0]
+                                    image_urls.append(image_url)
+                except Exception as e:
+                    logger.debug(f"TEST MODE: Could not extract images: {e}")
+                
+                # Create test message
+                message = f"""🧪 **TEST MESSAGE - Sample Listing**
+
+📍 {title}
+💰 {price}
+🛏️ {rooms}
+📐 {size}
+🏢 {floor}
+🔗 [Click here to view]({link})
+
+💡 **Note**: This is a sample listing to test the bot functionality. In normal operation, you would only receive notifications for NEW listings."""
+
+                # Send the test message
+                await self.send_telegram_message(chat_id, message, image_urls)
+                logger.info(f"TEST MODE: Successfully sent test message for user {chat_id}")
+                
+        except Exception as e:
+            logger.error(f"TEST MODE: Error sending test message for user {chat_id}: {e}")
 
 
 async def main():

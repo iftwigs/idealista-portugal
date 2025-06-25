@@ -1241,13 +1241,13 @@ async def test_search_now(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.info(f"TEST SEARCH: Manual test search initiated by user {user_id}")
 
         results = await scraper.scrape_listings(
-            config, str(chat_id), max_pages=3, force_all_pages=True
+            config, str(chat_id), max_pages=3, force_all_pages=True, test_mode=True
         )
 
         if results is None:
             message = "❌ **Test Failed**: Could not fetch data from Idealista (rate limiting or network error)"
         elif len(results) == 0:
-            message = "✅ **Test Successful**: No new listings found matching your criteria (this is normal if you've seen all current listings)"
+            message = "✅ **Test Successful**: No new listings found matching your criteria. A sample listing has been sent to demonstrate the bot functionality."
         else:
             message = f"✅ **Test Successful**: Found {len(results)} new listings! Check your chat for notifications."
 
