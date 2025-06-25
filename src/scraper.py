@@ -218,7 +218,8 @@ class IdealistaScraper:
                 try:
                     image_data = await self._download_image(image_url)
                     if image_data:
-                        logger.info(f"Sending image to {chat_id}: {len(image_data)} bytes, JPEG: {image_data.startswith(b'\\xff\\xd8')}")
+                        jpeg_header = b'\xff\xd8'
+                        logger.info(f"Sending image to {chat_id}: {len(image_data)} bytes, JPEG: {image_data.startswith(jpeg_header)}")
                         
                         # Send as raw bytes - simpler and more reliable
                         await bot.send_photo(
