@@ -579,48 +579,59 @@ class IdealistaScraper:
                         else:
                             state_status = "❓ State unknown"
 
-                        # Extract property image URLs from multimedia container
+                        # Extract property image URLs from item gallery
                         image_urls = []
                         try:
-                            # Look for multimedia-container div
-                            multimedia_container = listing.find(
-                                "div", class_="multimedia-container"
-                            )
-                            if multimedia_container:
-                                main_multimedia = multimedia_container.find(
-                                    "div", class_="main-multimedia"
-                                )
-                                if main_multimedia:
-                                    # Find all picture elements and extract jpeg sources
-                                    pictures = main_multimedia.find_all("picture")
-                                    for picture in pictures[
-                                        :10
-                                    ]:  # Limit to first 10 images
-                                        # Look for source with image/jpeg type
-                                        jpeg_source = picture.find(
-                                            "source", type="image/jpeg"
-                                        )
-                                        if jpeg_source and jpeg_source.get("srcset"):
-                                            srcset = jpeg_source.get("srcset")
-                                            # Extract the first URL from srcset (usually highest quality)
-                                            image_url = srcset.split(",")[0].split()[0]
-                                            image_urls.append(image_url)
-                                            logger.debug(
-                                                f"Found image URL for {title}: {image_url}"
+                            # Look for item-gallery div
+                            item_gallery = listing.find("div", class_="item-gallery")
+                            if item_gallery:
+                                # Find all picture elements and extract jpeg sources
+                                pictures = item_gallery.find_all("picture")
+                                for picture in pictures[
+                                    :10
+                                ]:  # Limit to first 10 images
+                                    # Look for source with image/jpeg type
+                                    jpeg_source = picture.find(
+                                        "source", type="image/jpeg"
+                                    )
+                                    if jpeg_source and jpeg_source.get("srcset"):
+                                        srcset = jpeg_source.get("srcset")
+                                        # Extract the first URL from srcset (usually highest quality)
+                                        image_url = srcset.split(",")[0].split()[0]
+                                        # Convert blur URL to higher quality if possible
+                                        if "/blur/" in image_url:
+                                            image_url = image_url.replace(
+                                                "/blur/480_360_mq/", "/blur/680_510_mq/"
                                             )
-
-                                    if not image_urls:
+                                        image_urls.append(image_url)
                                         logger.debug(
-                                            f"No images found in multimedia container for {title}"
+                                            f"Found image URL for {title}: {image_url}"
                                         )
-                                else:
+
+                                if not image_urls:
                                     logger.debug(
-                                        f"No main-multimedia found for {title}"
+                                        f"No images found in item-gallery for {title}"
                                     )
                             else:
-                                logger.debug(
-                                    f"No multimedia-container found for {title}"
+                                # Fallback: Look for the main property image using old method
+                                img_element = listing.find(
+                                    "img", alt="Primeira foto do imóvel"
                                 )
+                                if img_element and img_element.get("src"):
+                                    image_url = img_element.get("src")
+                                    # Convert blur URL to higher quality if possible
+                                    if "/blur/" in image_url:
+                                        image_url = image_url.replace(
+                                            "/blur/480_360_mq/", "/blur/680_510_mq/"
+                                        )
+                                    image_urls.append(image_url)
+                                    logger.debug(
+                                        f"Found fallback image URL for {title}: {image_url}"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"No item-gallery or fallback image found for {title}"
+                                    )
                         except Exception as e:
                             logger.warning(f"Error extracting images for {title}: {e}")
                             image_urls = []
@@ -707,47 +718,63 @@ class IdealistaScraper:
 
             return all_listings
 
-    async def _send_test_message_with_last_seen(self, config: SearchConfig, chat_id: str):
+    async def _send_test_message_with_last_seen(
+        self, config: SearchConfig, chat_id: str
+    ):
         """Send a test message using the most recent listing for demonstration purposes"""
         try:
-            logger.info(f"TEST MODE: Sending test message with last seen listing for user {chat_id}")
-            
+            logger.info(
+                f"TEST MODE: Sending test message with last seen listing for user {chat_id}"
+            )
+
             # Get the first page to find a recent listing
             base_url = config.get_base_url()
-            
+
             async with aiohttp.ClientSession() as session:
                 page_content = await fetch_page(session, base_url, chat_id)
                 if not page_content:
                     logger.warning(f"TEST MODE: Could not fetch page for test message")
                     return
-                
+
                 soup = BeautifulSoup(page_content, "html.parser")
                 listing_elements = soup.find_all("article", class_="item")
-                
+
                 if not listing_elements:
-                    logger.warning(f"TEST MODE: No listings found on page for test message")
+                    logger.warning(
+                        f"TEST MODE: No listings found on page for test message"
+                    )
                     return
-                
+
                 # Use the first listing as test example
                 listing = listing_elements[0]
-                
+
                 # Extract listing data (similar to regular extraction logic)
                 title_element = listing.find("a", class_="item-link")
                 if not title_element:
-                    logger.warning(f"TEST MODE: Could not extract title for test message")
+                    logger.warning(
+                        f"TEST MODE: Could not extract title for test message"
+                    )
                     return
-                
+
                 title = title_element.get_text(strip=True)
                 link = "https://www.idealista.pt" + title_element.get("href", "")
-                
+
                 # Extract price
                 price_element = listing.find("span", class_="item-price")
-                price = price_element.get_text(strip=True) if price_element else "Price not available"
-                
+                price = (
+                    price_element.get_text(strip=True)
+                    if price_element
+                    else "Price not available"
+                )
+
                 # Extract rooms
                 rooms_element = listing.find("span", class_="item-detail")
-                rooms = rooms_element.get_text(strip=True) if rooms_element else "Rooms not available"
-                
+                rooms = (
+                    rooms_element.get_text(strip=True)
+                    if rooms_element
+                    else "Rooms not available"
+                )
+
                 # Extract size
                 size_elements = listing.find_all("span", class_="item-detail")
                 size = "Size not available"
@@ -756,7 +783,7 @@ class IdealistaScraper:
                     if "m²" in text:
                         size = text
                         break
-                
+
                 # Extract floor
                 floor = "Floor not available"
                 for element in size_elements:
@@ -764,24 +791,38 @@ class IdealistaScraper:
                     if "º" in text or "floor" in text.lower():
                         floor = text
                         break
-                
-                # Extract images
+
+                # Extract images using same logic as main scraper
                 image_urls = []
                 try:
-                    multimedia_container = listing.find("div", class_="multimedia-container")
-                    if multimedia_container:
-                        main_multimedia = multimedia_container.find("div", class_="main-multimedia")
-                        if main_multimedia:
-                            pictures = main_multimedia.find_all("picture")
-                            for picture in pictures[:3]:  # Limit to 3 images for test
-                                jpeg_source = picture.find("source", type="image/jpeg")
-                                if jpeg_source and jpeg_source.get("srcset"):
-                                    srcset = jpeg_source.get("srcset")
-                                    image_url = srcset.split(",")[0].split()[0]
-                                    image_urls.append(image_url)
+                    # Look for item-gallery div
+                    item_gallery = listing.find("div", class_="item-gallery")
+                    if item_gallery:
+                        pictures = item_gallery.find_all("picture")
+                        for picture in pictures[:3]:  # Limit to 3 images for test
+                            jpeg_source = picture.find("source", type="image/jpeg")
+                            if jpeg_source and jpeg_source.get("srcset"):
+                                srcset = jpeg_source.get("srcset")
+                                image_url = srcset.split(",")[0].split()[0]
+                                # Convert blur URL to higher quality if possible
+                                if "/blur/" in image_url:
+                                    image_url = image_url.replace(
+                                        "/blur/480_360_mq/", "/blur/680_510_mq/"
+                                    )
+                                image_urls.append(image_url)
+                    else:
+                        # Fallback: Look for the main property image
+                        img_element = listing.find("img", alt="Primeira foto do imóvel")
+                        if img_element and img_element.get("src"):
+                            image_url = img_element.get("src")
+                            if "/blur/" in image_url:
+                                image_url = image_url.replace(
+                                    "/blur/480_360_mq/", "/blur/680_510_mq/"
+                                )
+                            image_urls.append(image_url)
                 except Exception as e:
                     logger.debug(f"TEST MODE: Could not extract images: {e}")
-                
+
                 # Create test message
                 message = f"""🧪 **TEST MESSAGE - Sample Listing**
 
@@ -796,10 +837,14 @@ class IdealistaScraper:
 
                 # Send the test message
                 await self.send_telegram_message(chat_id, message, image_urls)
-                logger.info(f"TEST MODE: Successfully sent test message for user {chat_id}")
-                
+                logger.info(
+                    f"TEST MODE: Successfully sent test message for user {chat_id}"
+                )
+
         except Exception as e:
-            logger.error(f"TEST MODE: Error sending test message for user {chat_id}: {e}")
+            logger.error(
+                f"TEST MODE: Error sending test message for user {chat_id}: {e}"
+            )
 
 
 async def main():
